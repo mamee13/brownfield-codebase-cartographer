@@ -1,23 +1,44 @@
+"""
+SQL Lineage Analyzer (improved)
+
+Parse failures are now logged to a structured WarningRecord list instead of
+being silently swallowed. The caller receives both deps and warnings.
+"""
+
 import re
-from typing import Set, Optional
+from typing import List, Optional, Set, Tuple
+
 from sqlglot import parse, exp
+
+from src.models.schema import WarningRecord, WarningSeverity
 
 
 class SQLAnalyzer:
-    """Analyzes SQL for dependencies (tables, views) and dbt macros/sources."""
+    """
+    Analyzes SQL for dependencies (tables, views) and dbt macros/sources.
+
+    Returns both a set of resolved dependencies and a list of WarningRecords.
+    Parse failures are ALWAYS logged — never silently dropped.
+    """
 
     def __init__(self, default_dialect: str = "postgres") -> None:
         self.default_dialect = default_dialect
 
-    def extract_dependencies(self, sql: str, dialect: Optional[str] = None) -> Set[str]:
+    def extract_dependencies(
+        self,
+        sql: str,
+        dialect: Optional[str] = None,
+        filepath: str = "<unknown>",
+    ) -> Tuple[Set[str], List[WarningRecord]]:
         """
-        Parses SQL using sqlglot and extracts physical table dependencies.
-        Returns a normalized set of table names (schema.table, lowercase, unquoted).
-        Also extracts dbt macros: {{ ref('x') }} and {{ source('a', 'b') }}.
+        Returns (deps, warnings).
+        deps: normalized set of table names (schema.table, lowercase, unquoted).
+        warnings: any WarningRecords generated (parse failures, etc.).
         """
         deps: Set[str] = set()
+        warnings: List[WarningRecord] = []
 
-        # 1. dbt macro handling via regex (before sqlglot, so works even on broken SQL)
+        # 1. dbt macro handling via regex (before sqlglot, works on broken SQL too)
         ref_pattern = r"\{\{\s*ref\(\s*['\"]([^'\"]+)['\"]\s*\)\s*\}\}"
         for match in re.finditer(ref_pattern, sql):
             deps.add(self._normalize_str(match.group(1)))
@@ -40,7 +61,7 @@ class SQLAnalyzer:
                     if cte.alias:
                         ctes.add(cte.alias.lower())
 
-                # Find all table references — use name parts, NOT .sql() which includes alias
+                # Walk table references — use name parts, NOT .sql() which includes alias
                 for table in statement.find_all(exp.Table):
                     parts = []
                     catalog = table.args.get("catalog")
@@ -58,19 +79,27 @@ class SQLAnalyzer:
 
                     fullname = ".".join(parts)
 
-                    # Skip CTE references
+                    # Skip CTE self-references
                     if self._normalize_str(name) in ctes:
                         continue
 
                     deps.add(fullname)
 
-        except Exception:
-            # Gracefully swallow parse errors; regex already caught macros above
-            pass
+        except Exception as exc:
+            # Log parse failure — never swallow silently
+            warnings.append(
+                WarningRecord(
+                    code="SQL_PARSE_ERROR",
+                    message=f"sqlglot could not parse SQL in {filepath}: {exc}",
+                    file=filepath,
+                    analyzer="SQLAnalyzer",
+                    severity=WarningSeverity.WARNING,
+                )
+            )
 
-        return deps
+        return deps, warnings
 
     def _normalize_str(self, s: str) -> str:
-        """Strip sql quotes and lowercase."""
+        """Strip SQL dialect quotes and lowercase."""
         clean = re.sub(r'["`\']', "", s)
         return clean.lower().strip()

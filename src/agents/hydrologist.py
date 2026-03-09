@@ -93,7 +93,9 @@ class Hydrologist:
                 )
                 continue
 
-            deps = self._sql.extract_dependencies(sql)
+            deps, parse_warnings = self._sql.extract_dependencies(sql, filepath=rel)
+            for w in parse_warnings:
+                kg.add_warning(w)
             # Determine target table from the file name (snake_case convention)
             target_name = sql_path.stem.lower()
             target_id = _dataset_id(target_name)

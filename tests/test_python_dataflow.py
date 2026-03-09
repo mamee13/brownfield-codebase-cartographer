@@ -95,10 +95,25 @@ def test_dynamic_ref_variable_emits_warning(analyzer: PythonDataFlowAnalyzer) ->
 # ── 5. Negative — avoid false positives ──────────────────────────────────────
 
 
-def test_no_false_positive_on_same_name(analyzer: PythonDataFlowAnalyzer) -> None:
-    # A method called 'to_csv' on a custom class should still be detected
-    # but unrelated 'to_csv' string literals must not pollute reads list
-    src = "result = some_object.execute('SELECT 1')\n"
+def test_no_false_positive_on_execute(analyzer: PythonDataFlowAnalyzer) -> None:
+    # execute() on a completely arbitrary object (not SQLAlchemy) should not
+    # silently produce a phantom write with a meaningful name.
+    # Because execute IS in our pattern list (covering sqlalchemy), it will still
+    # detect the call — but with a static string arg it WILL be recorded.
+    # The important guard: if the arg is dynamic (variable), then NO write + a warning.
+    src = "result = some_object.execute(query_var)\n"
     result = analyzer.analyze(src, "misc.py")
-    # execute maps to sqlalchemy.execute (write), not a read
+    # Dynamic arg → no write recorded, warning emitted
     assert result.reads == []
+    assert result.writes == []
+    assert any(w.code == "DYNAMIC_REF" for w in result.warnings)
+
+
+def test_execute_with_literal_still_recorded_as_write(
+    analyzer: PythonDataFlowAnalyzer,
+) -> None:
+    # When execute() has a literal string, it IS logged as a write (SQLAlchemy convention)
+    src = "conn.execute('INSERT INTO audit_log VALUES (1)')\n"
+    result = analyzer.analyze(src, "audit.py")
+    assert len(result.writes) == 1
+    assert "INSERT INTO audit_log VALUES (1)" in result.writes[0].name

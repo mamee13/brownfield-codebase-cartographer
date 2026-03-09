@@ -120,3 +120,86 @@ def test_analyze_writes_lineage_graph_json(tmp_path: Any) -> None:
     # Both source tables must appear as datasets
     assert _dataset_id("dw.dim_users") in data["nodes"]
     assert _dataset_id("dw.fact_sales") in data["nodes"]
+
+
+# ── Airflow e2e fixture integration test (audit finding #6) ──────────────────
+
+AIRFLOW_DAG_SOURCE = """\
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.providers.postgres.operators.postgres import PostgresOperator
+import datetime
+
+with DAG('etl_pipeline', start_date=datetime.datetime(2024,1,1)) as dag:
+    extract = PythonOperator(task_id='extract', python_callable=run_extract)
+    transform = PostgresOperator(
+        task_id='transform',
+        sql='SELECT * FROM raw.events WHERE date > current_date - 7',
+    )
+    load = PythonOperator(task_id='load', python_callable=run_load)
+    extract >> transform >> load
+"""
+
+
+def test_hydrologist_airflow_dag_produces_transformation_nodes(tmp_path: Any) -> None:
+    """
+    End-to-end test: Hydrologist runs over a fake repo containing an Airflow DAG file.
+    Verifies:
+      - Transformation nodes are created for each task
+      - Task dependency edges (CALLS) exist between transformation nodes
+      - The artifact (lineage_graph.json) is valid JSON with nodes and edges
+    """
+    dag_dir = tmp_path / "dags"
+    dag_dir.mkdir()
+    (dag_dir / "etl_pipeline.py").write_text(AIRFLOW_DAG_SOURCE, encoding="utf-8")
+
+    h = Hydrologist(str(tmp_path))
+    kg = h.run()
+
+    out_path = tmp_path / ".cartography" / "lineage_graph.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    kg.save(out_path)
+
+    with open(out_path) as f:
+        data = json.load(f)
+
+    assert "nodes" in data
+    assert "edges" in data
+
+    # Check transformation nodes exist for the three tasks
+    node_ids = list(data["nodes"].keys())
+    assert any("extract" in n for n in node_ids), "Expected 'extract' task node"
+    assert any("transform" in n for n in node_ids), "Expected 'transform' task node"
+    assert any("load" in n for n in node_ids), "Expected 'load' task node"
+
+    # Check CALLS edges (extract→transform, transform→load)
+    edges = data["edges"]
+    calls_edges = [e for e in edges if e.get("type") == "calls"]
+    assert len(calls_edges) >= 2, f"Expected ≥2 CALLS edges, got: {calls_edges}"
+
+
+def test_hydrologist_sql_parse_failures_appear_in_warnings(tmp_path: Any) -> None:
+    """
+    Hydrologist must surface SQL parse errors as structured warnings in the
+    lineage_graph.json, not silently swallow them.
+    """
+    sql_dir = tmp_path / "queries"
+    sql_dir.mkdir()
+    (sql_dir / "broken.sql").write_text(
+        "THIS IS COMPLETELY INVALID SQL @@@@", encoding="utf-8"
+    )
+
+    h = Hydrologist(str(tmp_path))
+    kg = h.run()
+
+    out_path = tmp_path / ".cartography" / "lineage_graph.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    kg.save(out_path)
+
+    with open(out_path) as f:
+        data = json.load(f)
+
+    warnings = data.get("warnings", [])
+    assert any(w.get("code") == "SQL_PARSE_ERROR" for w in warnings), (
+        f"Expected SQL_PARSE_ERROR warning, got: {warnings}"
+    )
