@@ -50,7 +50,7 @@ _PATTERNS: List[Tuple[List[str], str, str]] = [
     (["to_csv"], "write", "pandas.to_csv"),
     (["to_parquet"], "write", "pandas.to_parquet"),
     (["to_sql"], "write", "pandas.to_sql"),
-    # SQLAlchemy execute (convention: first arg is query/table name)
+    # SQLAlchemy execute (guarded by chain provenance in _is_sqlalchemy_execute_chain)
     (["execute"], "write", "sqlalchemy.execute"),
     # PySpark reads
     (["read", "csv"], "read", "pyspark.read.csv"),
@@ -62,6 +62,8 @@ _PATTERNS: List[Tuple[List[str], str, str]] = [
     (["write", "parquet"], "write", "pyspark.write.parquet"),
     (["write", "saveAsTable"], "write", "pyspark.write.saveAsTable"),
 ]
+
+_SQLALCHEMY_EXECUTE_ROOTS = {"engine", "conn", "connection", "session", "cursor"}
 
 
 def _call_chain(node: ast.expr) -> List[str]:
@@ -145,8 +147,31 @@ class PythonDataFlowAnalyzer:
             # Match if the pattern appears as a suffix in the chain
             plen = len(pattern)
             if len(suffix) >= plen and suffix[-plen:] == pattern:
+                if pattern == ["execute"] and not self._is_sqlalchemy_execute_chain(
+                    chain
+                ):
+                    return
                 self._extract_arg(node, filepath, direction, api, result)
                 return
+
+    @staticmethod
+    def _is_sqlalchemy_execute_chain(chain: List[str]) -> bool:
+        """
+        Best-effort provenance check for execute() to reduce false positives.
+        Accept patterns that look like SQLAlchemy handles, e.g.:
+        - conn.execute(...)
+        - session.execute(...)
+        - self.engine.execute(...)
+        - sqlalchemy.engine.execute(...)
+        """
+        if len(chain) < 2 or chain[-1] != "execute":
+            return False
+
+        root_tokens = set(chain[:-1])
+        if "sqlalchemy" in root_tokens:
+            return True
+
+        return any(token in _SQLALCHEMY_EXECUTE_ROOTS for token in root_tokens)
 
     def _extract_arg(
         self,

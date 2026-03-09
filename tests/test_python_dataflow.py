@@ -96,17 +96,13 @@ def test_dynamic_ref_variable_emits_warning(analyzer: PythonDataFlowAnalyzer) ->
 
 
 def test_no_false_positive_on_execute(analyzer: PythonDataFlowAnalyzer) -> None:
-    # execute() on a completely arbitrary object (not SQLAlchemy) should not
-    # silently produce a phantom write with a meaningful name.
-    # Because execute IS in our pattern list (covering sqlalchemy), it will still
-    # detect the call — but with a static string arg it WILL be recorded.
-    # The important guard: if the arg is dynamic (variable), then NO write + a warning.
+    # execute() on a completely arbitrary object (not SQLAlchemy-like provenance)
+    # should be ignored entirely.
     src = "result = some_object.execute(query_var)\n"
     result = analyzer.analyze(src, "misc.py")
-    # Dynamic arg → no write recorded, warning emitted
     assert result.reads == []
     assert result.writes == []
-    assert any(w.code == "DYNAMIC_REF" for w in result.warnings)
+    assert result.warnings == []
 
 
 def test_execute_with_literal_still_recorded_as_write(
