@@ -30,6 +30,7 @@ class TreeSitterAnalyzer:
         self, path: str, content: bytes
     ) -> tuple[List[str], List[str]]:
         """Parse python file and extract imports and public functions/classes."""
+        _ = path
         lang = LanguageRouter.get_language(".py")
         if not lang:
             return [], []
@@ -54,7 +55,7 @@ class TreeSitterAnalyzer:
                     name_text = name_node.text
                     if name_text is not None:
                         name = name_text.decode("utf-8")
-                        if not name.startswith("_") or name.startswith("__"):
+                        if not name.startswith("_"):
                             public_symbols.append(name)
 
             for child in node.children:
