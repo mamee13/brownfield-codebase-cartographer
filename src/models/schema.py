@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class NodeType(str, Enum):
@@ -63,6 +63,21 @@ class FunctionNode(BaseModel):
     is_public_api: Optional[bool] = None
 
 
+class WarningSeverity(str, Enum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class WarningRecord(BaseModel):
+    code: str
+    message: str
+    file: Optional[str] = None
+    line: Optional[int] = None
+    analyzer: str
+    severity: WarningSeverity = WarningSeverity.WARNING
+
+
 class TransformationNode(BaseModel):
     id: str
     type: NodeType = NodeType.TRANSFORMATION
@@ -94,3 +109,4 @@ class Edge(BaseModel):
 class GraphSchema(BaseModel):
     nodes: Dict[str, Node]
     edges: List[Edge]
+    warnings: List[WarningRecord] = Field(default_factory=list)

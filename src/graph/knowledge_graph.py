@@ -6,7 +6,7 @@ import networkx as nx
 from pydantic import TypeAdapter
 from typing import Any
 
-from src.models.schema import Edge, GraphSchema, Node
+from src.models.schema import Edge, GraphSchema, Node, WarningRecord
 
 NodeAdapter: TypeAdapter[Any] = TypeAdapter(Node)
 
@@ -14,6 +14,10 @@ NodeAdapter: TypeAdapter[Any] = TypeAdapter(Node)
 class KnowledgeGraph:
     def __init__(self) -> None:
         self.graph: nx.DiGraph[Any] = nx.DiGraph()
+        self.warnings: list[WarningRecord] = []
+
+    def add_warning(self, warning: WarningRecord) -> None:
+        self.warnings.append(warning)
 
     def add_node(self, node: Node) -> None:
         """Add a Node to the graph, using its id as the NetworkX node identifier."""
@@ -41,7 +45,7 @@ class KnowledgeGraph:
             edge_data.update(data)
             edges.append(Edge.model_validate(edge_data))
 
-        return GraphSchema(nodes=nodes, edges=edges)
+        return GraphSchema(nodes=nodes, edges=edges, warnings=self.warnings)
 
     def save(self, filepath: str | Path) -> None:
         """Serialize the graph to a JSON file."""
@@ -61,4 +65,6 @@ class KnowledgeGraph:
             kg.add_node(node)
         for edge in schema.edges:
             kg.add_edge(edge)
+        # Restore warnings from the serialized schema
+        kg.warnings = list(schema.warnings)
         return kg

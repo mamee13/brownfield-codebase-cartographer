@@ -2,6 +2,7 @@ from pathlib import Path
 
 from src.agents.surveyor import Surveyor
 from src.analyzers.tree_sitter_analyzer import TreeSitterAnalyzer
+from src.models.schema import ModuleNode
 
 
 def test_tree_sitter_excludes_private_and_dunder_symbols() -> None:
@@ -53,8 +54,14 @@ def test_surveyor_builds_import_edges_and_metrics(tmp_path: Path) -> None:
     assert ("src/a.py", "src/c.py") in edges
     assert ("src/b.py", "src/c.py") in edges
 
-    assert schema.nodes["src/d.py"].is_dead_code_candidate is True
-    assert schema.nodes["src/c.py"].is_dead_code_candidate is False
+    node_d = schema.nodes["src/d.py"]
+    node_c = schema.nodes["src/c.py"]
+
+    assert isinstance(node_d, ModuleNode)
+    assert node_d.is_dead_code_candidate is True
+
+    assert isinstance(node_c, ModuleNode)
+    assert node_c.is_dead_code_candidate is False
 
     for node_id in schema.nodes:
         node_data = kg.graph.nodes[node_id]
