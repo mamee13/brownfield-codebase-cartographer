@@ -275,6 +275,18 @@ def test_llm_timeout_emits_warning_no_crash() -> None:
     assert any(e.action == "llm_error" for e in kg.trace_entries)
 
 
+def test_budget_exhausted_logs_warning_on_call() -> None:
+    client = FakeLLMClient(responses=["x"])
+    budget = ContextWindowBudget(max_tokens=1)
+    budget.exhausted = True
+    kg = KnowledgeGraph()
+    tracer = TraceLogger(kg)
+    sem = Semanticist(client=client, budget=budget)
+    resp = sem._call("prompt", "bulk", tracer, filepath="src/x.py")
+    assert resp is None
+    assert any(w.code == "BUDGET_EXCEEDED" for w in kg.warnings)
+
+
 # ── Domain clustering ─────────────────────────────────────────────────────────
 
 
@@ -307,6 +319,36 @@ def test_cluster_into_domains_deterministic() -> None:
 
     # Same cluster assignments (same set of module lists per domain)
     assert sorted(d1.values()) == sorted(d2.values())
+
+
+def test_cluster_into_domains_handles_embed_error() -> None:
+    class _FailEmbed:
+        def complete(
+            self, prompt: str, model: str, max_tokens: int = 1024
+        ) -> LLMResponse:
+            return LLMResponse(text="ok", tokens_in=1, tokens_out=1, model=model)
+
+        def embed(
+            self, texts: List[str], model: str = EMBED_MODEL
+        ) -> List[List[float]]:
+            raise TimeoutError("embed failed")
+
+    kg = KnowledgeGraph()
+    tracer = TraceLogger(kg)
+    sem = Semanticist(client=_FailEmbed())
+    nodes = [
+        ModuleNode(
+            id="module:src/a.py",
+            path="src/a.py",
+            language="python",
+            purpose_statement="Does ingestion.",
+        )
+    ]
+    for n in nodes:
+        kg.add_node(n)
+    domain_map = sem.cluster_into_domains(nodes, tracer)
+    assert domain_map == {}
+    assert any(w.code == "LLM_ERROR" for w in kg.warnings)
 
 
 def test_cluster_constants_defined() -> None:

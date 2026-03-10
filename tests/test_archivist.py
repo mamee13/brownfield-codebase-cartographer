@@ -151,6 +151,29 @@ def test_onboarding_brief_with_answers_includes_evidence(tmp_path: Any) -> None:
     )
 
 
+def test_codebase_md_sources_include_transform_context(tmp_path: Any) -> None:
+    kg = KnowledgeGraph()
+    ds = DatasetNode(id="dataset:raw.orders", name="raw.orders")
+    tx = ModuleNode(
+        id="transformation:models/orders.sql:1-1",
+        path="models/orders.sql",
+        language="sql",
+    )
+    kg.add_node(ds)
+    kg.add_node(tx)
+    kg.add_edge(
+        Edge(
+            source="transformation:models/orders.sql:1-1",
+            target="dataset:raw.orders",
+            type=EdgeType.PRODUCES,
+        )
+    )
+    arch = Archivist(output_dir=tmp_path)
+    content = arch.generate_codebase_md(kg, tmp_path / "CODEBASE.md")
+    # Must include transformation context
+    assert "orders.sql" in content
+
+
 # ── cartography_trace.jsonl ───────────────────────────────────────────────────
 
 

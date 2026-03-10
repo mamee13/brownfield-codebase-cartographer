@@ -94,12 +94,12 @@ class Archivist:
         source_ids = [n for n in kg.graph.nodes if kg.graph.in_degree(n) == 0]
         sink_ids = [n for n in kg.graph.nodes if kg.graph.out_degree(n) == 0]
         src_lines = [
-            f"- {kg.graph.nodes[n].get('name', n)} (source: static_analysis, file: {kg.graph.nodes[n].get('source_file', 'unknown')}, line: L1-1)"
+            self._format_dataset_with_transform(kg, n)
             for n in source_ids
             if kg.graph.nodes[n].get("type") == "dataset"
         ]
         sink_lines = [
-            f"- {kg.graph.nodes[n].get('name', n)} (source: static_analysis, file: {kg.graph.nodes[n].get('source_file', 'unknown')}, line: L1-1)"
+            self._format_dataset_with_transform(kg, n)
             for n in sink_ids
             if kg.graph.nodes[n].get("type") == "dataset"
         ]
@@ -308,3 +308,30 @@ class Archivist:
                 except Exception:
                     pass
         return nodes
+
+    def _format_dataset_with_transform(self, kg: KnowledgeGraph, node_id: str) -> str:
+        """Format dataset line with associated transformation + source_file if available."""
+        data = kg.graph.nodes[node_id]
+        name = data.get("name", node_id)
+
+        # Find a connected transformation node for context
+        transform_id = None
+        for pred in kg.graph.predecessors(node_id):
+            if kg.graph.nodes[pred].get("type") == "transformation":
+                transform_id = pred
+                break
+        if transform_id is None:
+            for succ in kg.graph.successors(node_id):
+                if kg.graph.nodes[succ].get("type") == "transformation":
+                    transform_id = succ
+                    break
+
+        if transform_id:
+            tdata = kg.graph.nodes[transform_id]
+            ttype = tdata.get("transformation_type", "unknown")
+            tfile = tdata.get("source_file", "unknown")
+            return (
+                f"- {name} ← {ttype} ({tfile}) "
+                f"(source: static_analysis, file: {tfile}, line: L1-1)"
+            )
+        return f"- {name} (source: static_analysis, file: unknown, line: L1-1)"

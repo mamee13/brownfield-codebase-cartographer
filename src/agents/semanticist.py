@@ -354,6 +354,18 @@ class Semanticist:
         filepath: Optional[str] = None,
     ) -> Optional[LLMResponse]:
         if not self._budget.check():
+            msg = "Token budget exhausted — skipping LLM call."
+            if self._on_budget_exceeded:
+                self._on_budget_exceeded(msg)
+            tracer._kg.add_warning(
+                WarningRecord(
+                    code="BUDGET_EXCEEDED",
+                    message=msg,
+                    file=filepath,
+                    analyzer="Semanticist",
+                    severity=WarningSeverity.WARNING,
+                )
+            )
             return None
         model = route_model(task_type)
         try:
@@ -467,6 +479,8 @@ class Semanticist:
                 if module_node.id in kg.graph.nodes:
                     kg.graph.nodes[module_node.id]["doc_drift"] = True
                 return purpose  # still return the good statement
+            if module_node.id in kg.graph.nodes:
+                kg.graph.nodes[module_node.id]["doc_drift"] = False
 
         _ = confidence  # used to inform callers if needed
         return purpose
@@ -495,7 +509,25 @@ class Semanticist:
             confidence="inferred",
             detail=f"model={EMBED_MODEL} n={len(texts)}",
         )
-        embeddings = self._client.embed(texts, model=EMBED_MODEL)
+        try:
+            embeddings = self._client.embed(texts, model=EMBED_MODEL)
+        except Exception as exc:
+            tracer.log(
+                agent="Semanticist",
+                action="embed_error",
+                evidence_source="llm_inference",
+                confidence="inferred",
+                detail=str(exc),
+            )
+            tracer._kg.add_warning(
+                WarningRecord(
+                    code="LLM_ERROR",
+                    message=f"Embedding failed: {exc}",
+                    analyzer="Semanticist",
+                    severity=WarningSeverity.ERROR,
+                )
+            )
+            return {}
 
         k = min(max(KMEANS_K_MIN, len(eligible) // 2), KMEANS_K_MAX, len(eligible))
         kmeans = KMeans(n_clusters=k, random_state=KMEANS_SEED, n_init=10)
@@ -644,15 +676,17 @@ class Semanticist:
 
             # Extract file citations: file:path/to/file.py:L1-42
             cite_pattern = re.findall(
-                r"file:([\w./\-_]+\.(?:py|sql|yaml|yml)):L(\d+)-(\d+)", answer_text
+                r"file:([\w./\-_]+\.(?:py|sql|yaml|yml)):L(\d+)-(\d+)"
+                r"(?:\s*\(method:(static_analysis|llm_inference)\))?",
+                answer_text,
             )
             citations: List[Citation] = [
                 Citation(
                     file=path,
                     line_range=f"L{start}-{end}",
-                    method="llm_inference",
+                    method=method or "llm_inference",
                 )
-                for path, start, end in cite_pattern
+                for path, start, end, method in cite_pattern
             ]
 
             # Ensure at least one static citation from top5 modules
@@ -665,22 +699,15 @@ class Semanticist:
                     )
                 ]
             elif not citations:
-                # Last resort — mark as inferred with no file
-                citations = [
-                    Citation(
-                        file="unknown",
-                        line_range="L1-1",
-                        method="llm_inference",
-                    )
-                ]
                 kg.add_warning(
                     WarningRecord(
                         code="UNCITED_ANSWER",
-                        message=f"No file citation found for {q_key} — inserted placeholder.",
+                        message=f"No file citation found for {q_key} — answer dropped.",
                         analyzer="Semanticist",
-                        severity=WarningSeverity.WARNING,
+                        severity=WarningSeverity.ERROR,
                     )
                 )
+                continue
 
             answers[q_key] = AnswerWithCitation(
                 answer=answer_text,
