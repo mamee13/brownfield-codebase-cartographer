@@ -2,7 +2,6 @@ from pathlib import Path
 
 from src.agents.hydrologist import Hydrologist
 from src.agents.surveyor import Surveyor
-from src.models.schema import WarningRecord, WarningSeverity
 
 
 class Orchestrator:
@@ -29,19 +28,8 @@ class Orchestrator:
         from src.agents.archivist import Archivist
         import networkx as nx
 
-        try:
-            client = OpenRouterLLMClient()
-            semanticist = Semanticist(client=client)
-        except Exception as exc:
-            module_kg.add_warning(
-                WarningRecord(
-                    code="LLM_ERROR",
-                    message=str(exc),
-                    analyzer="Orchestrator",
-                    severity=WarningSeverity.ERROR,
-                )
-            )
-            semanticist = None
+        client = OpenRouterLLMClient()
+        semanticist = Semanticist(client=client)
 
         # Build source map for Semanticist: module_path -> source code
         source_map = {}
@@ -71,14 +59,13 @@ class Orchestrator:
         except Exception:
             top5 = []
 
-        if semanticist is not None:
-            semanticist.run(
-                module_kg,
-                source_map=source_map,
-                find_sources_fn=hydrologist.find_sources,
-                find_sinks_fn=hydrologist.find_sinks,
-                pagerank_top5=top5,
-            )
+        semanticist.run(
+            module_kg,
+            source_map=source_map,
+            find_sources_fn=hydrologist.find_sources,
+            find_sinks_fn=hydrologist.find_sinks,
+            pagerank_top5=top5,
+        )
 
         # Run Archivist to generate artifacts from enriched KG
         archivist = Archivist(output_dir=self.cartography_dir)
