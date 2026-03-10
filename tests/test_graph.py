@@ -1,9 +1,10 @@
 import os
 from src.models.schema import ModuleNode, Edge, EdgeType
 from src.graph.knowledge_graph import KnowledgeGraph
+from typing import Any
 
 
-def test_knowledge_graph_serialization(tmp_path) -> None:
+def test_knowledge_graph_serialization(tmp_path: Any) -> None:
     kg = KnowledgeGraph()
 
     mod1 = ModuleNode(id="src/main.py", path="src/main.py", language="python")

@@ -44,6 +44,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "types-networkx" },
+    { name = "types-pyyaml" },
 ]
 
 [package.metadata]
@@ -65,7 +66,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "types-networkx", specifier = ">=3.6.1.20260303" }]
+dev = [
+    { name = "types-networkx", specifier = ">=3.6.1.20260303" },
+    { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
+]
 
 [[package]]
 name = "cfgv"
@@ -752,6 +756,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/78/37/d8f7a68a5291cab793e27967d187abbf0c6db318d49e5b6e9dd32b13c2e5/types_networkx-3.6.1.20260303.tar.gz", hash = "sha256:8248aa6fcadc08bd7992af6e412bfc5cfa043bda5ce7ab407fa591c808ce8557", size = 73790, upload-time = "2026-03-03T04:03:46.201Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f2/b7/eedcba86c567832699eb242709e8951c0df2b6658beb5f931e954292bcda/types_networkx-3.6.1.20260303-py3-none-any.whl", hash = "sha256:754c7c7bcaab3c317b0b86441240c0a5bd0d2f419aba80a88e9718248a5c89af", size = 162680, upload-time = "2026-03-03T04:03:44.081Z" },
+]
+
+[[package]]
+name = "types-pyyaml"
+version = "6.0.12.20250915"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/69/3c51b36d04da19b92f9e815be12753125bd8bc247ba0470a982e6979e71c/types_pyyaml-6.0.12.20250915.tar.gz", hash = "sha256:0f8b54a528c303f0e6f7165687dd33fafa81c807fcac23f632b63aa624ced1d3", size = 17522, upload-time = "2025-09-15T03:01:00.728Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/e0/1eed384f02555dde685fff1a1ac805c1c7dcb6dd019c916fe659b1c1f9ec/types_pyyaml-6.0.12.20250915-py3-none-any.whl", hash = "sha256:e7d4d9e064e89a3b3cae120b4990cd370874d2bf12fa5f46c97018dd5d3c9ab6", size = 20338, upload-time = "2025-09-15T03:00:59.218Z" },
 ]
 
 [[package]]

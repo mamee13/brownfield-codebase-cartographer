@@ -1,4 +1,6 @@
 from pathlib import Path
+
+from src.agents.hydrologist import Hydrologist
 from src.agents.surveyor import Surveyor
 
 
@@ -9,6 +11,12 @@ class Orchestrator:
         self.cartography_dir.mkdir(parents=True, exist_ok=True)
 
     def analyze(self) -> None:
+        # Run Surveyor → module graph
         surveyor = Surveyor(str(self.repo_path))
-        kg = surveyor.run()
-        kg.save(self.cartography_dir / "module_graph.json")
+        module_kg = surveyor.run()
+        module_kg.save(self.cartography_dir / "module_graph.json")
+
+        # Run Hydrologist → lineage graph
+        hydrologist = Hydrologist(str(self.repo_path))
+        lineage_kg = hydrologist.run()
+        lineage_kg.save(self.cartography_dir / "lineage_graph.json")

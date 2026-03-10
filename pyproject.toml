@@ -36,4 +36,5 @@ strict = true
 [dependency-groups]
 dev = [
     "types-networkx>=3.6.1.20260303",
+    "types-pyyaml>=6.0.12.20250915",
 ]
