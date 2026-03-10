@@ -1,12 +1,18 @@
 import json
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, List
 
 import networkx as nx
 from pydantic import TypeAdapter
-from typing import Any
 
-from src.models.schema import Edge, GraphSchema, Node, WarningRecord
+from src.models.schema import (
+    AnswerWithCitation,
+    Edge,
+    GraphSchema,
+    Node,
+    TraceEntry,
+    WarningRecord,
+)
 
 NodeAdapter: TypeAdapter[Any] = TypeAdapter(Node)
 
@@ -14,10 +20,17 @@ NodeAdapter: TypeAdapter[Any] = TypeAdapter(Node)
 class KnowledgeGraph:
     def __init__(self) -> None:
         self.graph: nx.DiGraph[Any] = nx.DiGraph()
-        self.warnings: list[WarningRecord] = []
+        self.warnings: List[WarningRecord] = []
+        # Day 3 additions — in-memory stores, serialized via to_schema()
+        self.day_one_answers: Dict[str, AnswerWithCitation] = {}
+        self.trace_entries: List[TraceEntry] = []
+
+    # ── Warnings ──────────────────────────────────────────────────────────────
 
     def add_warning(self, warning: WarningRecord) -> None:
         self.warnings.append(warning)
+
+    # ── Nodes / Edges ─────────────────────────────────────────────────────────
 
     def add_node(self, node: Node) -> None:
         """Add a Node to the graph, using its id as the NetworkX node identifier."""
@@ -27,16 +40,24 @@ class KnowledgeGraph:
     def add_edge(self, edge: Edge) -> None:
         """Add an Edge to the graph."""
         data = edge.model_dump(exclude_none=True)
-        # source and target are explicit in edge, we can separate them
         src = data.pop("source")
         dst = data.pop("target")
         self.graph.add_edge(src, dst, **data)
+
+    # ── Day 3 storage ─────────────────────────────────────────────────────────
+
+    def set_day_one_answers(self, answers: Dict[str, AnswerWithCitation]) -> None:
+        self.day_one_answers = answers
+
+    def add_trace_entry(self, entry: TraceEntry) -> None:
+        self.trace_entries.append(entry)
+
+    # ── Serialization ─────────────────────────────────────────────────────────
 
     def to_schema(self) -> GraphSchema:
         """Export the graph as a GraphSchema Pydantic model."""
         nodes: Dict[str, Node] = {}
         for n_id, data in self.graph.nodes(data=True):
-            # Parse dict back to appropriate Node model
             nodes[str(n_id)] = NodeAdapter.validate_python(data)
 
         edges = []
@@ -45,7 +66,13 @@ class KnowledgeGraph:
             edge_data.update(data)
             edges.append(Edge.model_validate(edge_data))
 
-        return GraphSchema(nodes=nodes, edges=edges, warnings=self.warnings)
+        return GraphSchema(
+            nodes=nodes,
+            edges=edges,
+            warnings=self.warnings,
+            day_one_answers=self.day_one_answers,
+            trace_entries=self.trace_entries,
+        )
 
     def save(self, filepath: str | Path) -> None:
         """Serialize the graph to a JSON file."""
@@ -65,6 +92,8 @@ class KnowledgeGraph:
             kg.add_node(node)
         for edge in schema.edges:
             kg.add_edge(edge)
-        # Restore warnings from the serialized schema
         kg.warnings = list(schema.warnings)
+        # Day 3: restore answers and trace from saved JSON
+        kg.day_one_answers = dict(schema.day_one_answers)
+        kg.trace_entries = list(schema.trace_entries)
         return kg

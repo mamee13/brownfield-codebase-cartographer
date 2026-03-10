@@ -1,7 +1,8 @@
-from enum import Enum
-from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
-from pydantic import BaseModel, Field
+from enum import Enum
+from typing import Any, Dict, List, Literal, Optional, Union
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class NodeType(str, Enum):
@@ -34,11 +35,14 @@ class ModuleNode(BaseModel):
     path: str
     language: str
     purpose_statement: Optional[str] = None
-    domain_cluster: Optional[str] = None
+    domain_cluster: Optional[str] = None  # confirmed existing field
     complexity_score: Optional[float] = None
     change_velocity_30d: Optional[int] = None
     is_dead_code_candidate: Optional[bool] = None
     last_modified: Optional[datetime] = None
+    # Day 3 additions
+    doc_drift: bool = False
+    symbol_line_map: Dict[str, int] = Field(default_factory=dict)
 
 
 class DatasetNode(BaseModel):
@@ -106,7 +110,56 @@ class Edge(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+# ── Day 3: Citation + Answer schemas ─────────────────────────────────────────
+
+
+class Citation(BaseModel):
+    """A grounded evidence reference. method distinguishes static analysis from LLM inference."""
+
+    file: str
+    line_range: str
+    method: Literal["static_analysis", "llm_inference"]
+
+
+class AnswerWithCitation(BaseModel):
+    """A Day-One answer with mandatory evidence citations. Empty citations list is rejected."""
+
+    answer: str
+    citations: List[Citation] = Field(min_length=1)
+    confidence: Literal["observed", "inferred"]
+
+    @field_validator("citations")
+    @classmethod
+    def citations_must_not_be_empty(cls, v: List[Citation]) -> List[Citation]:
+        if not v:
+            raise ValueError(
+                "citations must contain at least one Citation — uncited answers are not allowed"
+            )
+        return v
+
+
+# ── Day 3: Audit trace schema ─────────────────────────────────────────────────
+
+
+class TraceEntry(BaseModel):
+    """One logged action from any agent. Written to cartography_trace.jsonl."""
+
+    timestamp: datetime
+    agent: str
+    action: str
+    evidence_source: Literal["static_analysis", "llm_inference", "config_parse"]
+    confidence: Literal["observed", "inferred"]
+    file: Optional[str] = None
+    detail: Optional[str] = None
+
+
+# ── Graph container ───────────────────────────────────────────────────────────
+
+
 class GraphSchema(BaseModel):
     nodes: Dict[str, Node]
     edges: List[Edge]
     warnings: List[WarningRecord] = Field(default_factory=list)
+    # Day 3 additions — serialized alongside graph
+    day_one_answers: Dict[str, AnswerWithCitation] = Field(default_factory=dict)
+    trace_entries: List[TraceEntry] = Field(default_factory=list)
