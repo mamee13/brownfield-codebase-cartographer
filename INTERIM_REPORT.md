@@ -92,16 +92,21 @@ Inaccuracies / gaps:
 
 ## Completion Plan for Final Submission (Sequenced)
 
-Critical path (must‑have):
-1. **Improve module graph resolution** (dependency for accurate blast‑radius and critical path)  
-2. **Lineage hardening** (normalize dataset names, resolve dbt ref/source reliably)  
-3. **Navigator agent** (depends on stable knowledge graph + lineage)
-
-Stretch goals:
-4. **Semanticist accuracy tuning** (better purpose statements + doc drift)  
-5. **Incremental update mode** (git‑diff driven re‑analysis)
-
-If time gets tight: ship improved module graph + lineage + Navigator first, and defer Semanticist tuning and incremental mode.
+1. **Module graph resolution**  
+   - Improve import resolution for package roots and namespace packages.  
+   - Increase edge coverage with correct module path mapping.
+2. **Lineage hardening**  
+   - Normalize dataset identifiers and resolve `source()`/`ref()` consistently.  
+   - Reduce dynamic SQL ambiguity with structured warnings.
+3. **Navigator query mode**  
+   - Implement the four query tools (`find_implementation`, `trace_lineage`, `blast_radius`, `explain_module`).  
+   - Add CLI entrypoint and tool‑level smoke tests.
+4. **Incremental analysis**  
+   - Add diff‑based re‑analysis and node‑hash caching.  
+   - Merge deltas into the existing knowledge graph.
+5. **Semanticist refinement**  
+   - Strengthen code‑grounded prompts.  
+   - Surface doc‑drift flags in outputs.
 
 Risks:
 - LLM‑based semantic steps depend on external APIs and may require tuning for stability.
@@ -109,3 +114,17 @@ Risks:
 
 Fallback if time tight:
 - Prioritize lineage correctness + Navigator; defer semantic clustering upgrades.
+
+## PDF Outline (Interim Submission)
+
+1. Title page
+2. RECONNAISSANCE (manual Day-One analysis)
+   Use `RECONNAISSANCE.md` content verbatim or summarized.
+3. Architecture diagram
+   Use the four‑agent pipeline diagram from this report.
+4. Progress summary
+   Reuse the component status table and short notes.
+5. Early accuracy observations
+   Include current correctness examples and known gaps.
+6. Known gaps and plan for final submission
+   Reuse the completion plan, risks, and fallback plan.
