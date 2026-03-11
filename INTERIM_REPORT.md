@@ -46,18 +46,18 @@ The hardest part was tracing lineage across multiple systems (Dagster Airbyte as
 
 ```mermaid
 flowchart LR
-  A[Target Repo] --> S[Surveyor]
-  A --> H[Hydrologist]
-  S --> KG[Knowledge Graph]
-  H --> KG
-  KG --> Se[Semanticist]
-  Se --> KG
-  KG --> Ar[Archivist]
-  Ar --> O1[CODEBASE.md]
-  Ar --> O2[onboarding_brief.md]
-  Ar --> O3[module_graph.json]
-  Ar --> O4[lineage_graph.json]
-  Ar --> O5[cartography_trace.jsonl]
+  A[Target Repo] -->|source files| S[Surveyor]
+  A -->|SQL/Python/YAML| H[Hydrologist]
+  S -->|ModuleNodes + import graph + PageRank + velocity| KG[Knowledge Graph]
+  H -->|DatasetNodes + lineage edges + metadata| KG
+  KG -->|nodes + evidence| Se[Semanticist]
+  Se -->|Purpose statements + domain clusters + Day-One answers| KG
+  KG -->|enriched graph| Ar[Archivist]
+  Ar -->|living context| O1[CODEBASE.md]
+  Ar -->|Day-One brief| O2[onboarding_brief.md]
+  Ar -->|module graph| O3[module_graph.json]
+  Ar -->|lineage graph| O4[lineage_graph.json]
+  Ar -->|audit trail| O5[cartography_trace.jsonl]
 ```
 
 ## Progress Summary (Component Status)
@@ -67,10 +67,10 @@ flowchart LR
 | CLI (`src/cli.py`) | Working | `analyze` supports local path and `--repo` clone. |
 | Orchestrator (`src/orchestrator.py`) | Working | Runs Surveyor → Hydrologist → Semanticist → Archivist. |
 | Schemas (`src/models/schema.py`) | Working | Node/Edge/Graph schemas in place. |
-| Tree‑sitter analyzer | Working | Python import + public symbol extraction. |
-| SQL lineage analyzer | Working | `sqlglot` parsing, emits warnings on failures. |
-| Surveyor agent | Working | Import graph + PageRank + git velocity + dead‑code heuristic. |
-| Hydrologist agent | Partial | SQL lineage works; dataset naming still weak for dynamic SQL. |
+| Tree‑sitter analyzer | Working | Python imports + function/class signatures + decorators + inheritance; SQL table refs/CTEs/joins; YAML key paths; parse warnings logged. |
+| SQL lineage analyzer | Working | Multi‑dialect sqlglot parsing; per‑statement sources/targets + line ranges; dbt `ref()/source()` extraction; parse failures logged. |
+| Surveyor agent | Working | Import graph + PageRank + SCCs + git velocity + dead‑code heuristic + high‑velocity tagging. |
+| Hydrologist agent | Working | Merges SQL + Python dataflow + Airflow/dbt config; blast_radius returns paths; edges include metadata. |
 | Graph serialization | Working | `module_graph.json` and `lineage_graph.json` generated for this repo. |
 | Archivist outputs | Partial | For this repo, only module + lineage artifacts are present; semantic artifacts require LLM pass. |
 
