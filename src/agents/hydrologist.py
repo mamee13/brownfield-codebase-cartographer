@@ -19,13 +19,13 @@ Exposes blast_radius, find_sources, find_sinks for graph traversal.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List
 
 import networkx as nx
 
 from src.analyzers.dag_config_parser import AirflowDagAnalyzer, DbtSchemaAnalyzer
 from src.analyzers.python_dataflow import DataRef, PythonDataFlowAnalyzer
-from src.analyzers.sql_lineage import SQLAnalyzer
+from src.analyzers.sql_lineage import QueryLineage, SQLAnalyzer
 from src.graph.knowledge_graph import KnowledgeGraph
 from src.models.schema import (
     DatasetNode,
@@ -93,37 +93,76 @@ class Hydrologist:
                 )
                 continue
 
-            deps, parse_warnings = self._sql.extract_dependencies(sql, filepath=rel)
+            queries, parse_warnings = self._sql.extract_lineage(sql, filepath=rel)
             for w in parse_warnings:
                 kg.add_warning(w)
-            # Determine target table from the file name (snake_case convention)
-            target_name = sql_path.stem.lower()
-            target_id = _dataset_id(target_name)
-            tx_id = _transformation_id(rel, "1-end")
+            if not queries:
+                # Fallback: treat file stem as target with unknown sources
+                queries = [
+                    QueryLineage(
+                        sources=set(),
+                        targets={sql_path.stem.lower()},
+                        line_range="L1-1",
+                        dialect="unknown",
+                    )
+                ]
 
-            # Ensure target dataset node exists
-            _ensure_dataset(kg, target_name)
+            for q in queries:
+                # Determine target tables from SQL; fallback to file stem
+                targets = list(q.targets) if q.targets else [sql_path.stem.lower()]
+                sources = list(q.sources)
+                line_range = q.line_range or "L1-1"
 
-            # Transformation node
-            source_datasets = list(deps)
-            tx_node = TransformationNode(
-                id=tx_id,
-                source_datasets=source_datasets,
-                target_datasets=[target_name],
-                transformation_type="sql",
-                source_file=rel,
-                line_range="1-end",
-            )
-            kg.add_node(tx_node)
+                tx_id = _transformation_id(rel, line_range)
 
-            # Source datasets → Transformation
-            for dep in deps:
-                dep_id = _dataset_id(dep)
-                _ensure_dataset(kg, dep)
-                kg.add_edge(Edge(source=dep_id, target=tx_id, type=EdgeType.CONSUMES))
+                # Ensure dataset nodes exist
+                for t in targets:
+                    _ensure_dataset(kg, t)
+                for s in sources:
+                    _ensure_dataset(kg, s)
 
-            # Transformation → target dataset
-            kg.add_edge(Edge(source=tx_id, target=target_id, type=EdgeType.PRODUCES))
+                # Transformation node
+                tx_node = TransformationNode(
+                    id=tx_id,
+                    source_datasets=sources,
+                    target_datasets=targets,
+                    transformation_type="sql",
+                    source_file=rel,
+                    line_range=line_range,
+                )
+                kg.add_node(tx_node)
+
+                # Source datasets → Transformation
+                for dep in sources:
+                    dep_id = _dataset_id(dep)
+                    kg.add_edge(
+                        Edge(
+                            source=dep_id,
+                            target=tx_id,
+                            type=EdgeType.CONSUMES,
+                            metadata={
+                                "transformation_type": "sql",
+                                "source_file": rel,
+                                "line_range": line_range,
+                            },
+                        )
+                    )
+
+                # Transformation → target datasets
+                for target_name in targets:
+                    target_id = _dataset_id(target_name)
+                    kg.add_edge(
+                        Edge(
+                            source=tx_id,
+                            target=target_id,
+                            type=EdgeType.PRODUCES,
+                            metadata={
+                                "transformation_type": "sql",
+                                "source_file": rel,
+                                "line_range": line_range,
+                            },
+                        )
+                    )
 
     # ── Python ─────────────────────────────────────────────────────────────────
 
@@ -164,9 +203,31 @@ class Hydrologist:
             kg.add_node(tx_node)
 
             if direction == "read":
-                kg.add_edge(Edge(source=ds_id, target=tx_id, type=EdgeType.CONSUMES))
+                kg.add_edge(
+                    Edge(
+                        source=ds_id,
+                        target=tx_id,
+                        type=EdgeType.CONSUMES,
+                        metadata={
+                            "transformation_type": ref.api,
+                            "source_file": rel,
+                            "line_range": f"L{ref.line}-L{ref.line}",
+                        },
+                    )
+                )
             else:
-                kg.add_edge(Edge(source=tx_id, target=ds_id, type=EdgeType.PRODUCES))
+                kg.add_edge(
+                    Edge(
+                        source=tx_id,
+                        target=ds_id,
+                        type=EdgeType.PRODUCES,
+                        metadata={
+                            "transformation_type": ref.api,
+                            "source_file": rel,
+                            "line_range": f"L{ref.line}-L{ref.line}",
+                        },
+                    )
+                )
 
     # ── Airflow ────────────────────────────────────────────────────────────────
 
@@ -195,7 +256,7 @@ class Hydrologist:
                     target_datasets=[],
                     transformation_type=task.operator,
                     source_file=rel,
-                    line_range=task_id,
+                    line_range="unknown",
                 )
                 kg.add_node(tx_node)
                 task_id_to_node[task_id] = tx_id
@@ -206,7 +267,16 @@ class Hydrologist:
                     dn_tx = task_id_to_node.get(task_id)
                     if up_tx and dn_tx:
                         kg.add_edge(
-                            Edge(source=up_tx, target=dn_tx, type=EdgeType.CALLS)
+                            Edge(
+                                source=up_tx,
+                                target=dn_tx,
+                                type=EdgeType.CALLS,
+                                metadata={
+                                    "transformation_type": "airflow_task_dependency",
+                                    "source_file": rel,
+                                    "line_range": "unknown",
+                                },
+                            )
                         )
 
     # ── dbt ────────────────────────────────────────────────────────────────────
@@ -247,12 +317,23 @@ class Hydrologist:
 
     # ── Graph traversal ────────────────────────────────────────────────────────
 
-    def blast_radius(self, node_id: str, kg: KnowledgeGraph) -> Set[str]:
-        """Return all downstream nodes reachable from node_id."""
+    def blast_radius(self, node_id: str, kg: KnowledgeGraph) -> Dict[str, List[str]]:
+        """Return downstream nodes with a path (shortest) from the start node."""
+        if node_id not in kg.graph:
+            return {}
+
+        paths: Dict[str, List[str]] = {}
         try:
-            return set(nx.descendants(kg.graph, node_id))
+            for target in nx.descendants(kg.graph, node_id):
+                try:
+                    path = nx.shortest_path(kg.graph, node_id, target)
+                except nx.NetworkXNoPath:
+                    continue
+                paths[str(target)] = [str(n) for n in path]
         except nx.NetworkXError:
-            return set()
+            return {}
+
+        return paths
 
     def find_sources(self, kg: KnowledgeGraph) -> List[str]:
         """Return nodes with no incoming edges (graph sources)."""

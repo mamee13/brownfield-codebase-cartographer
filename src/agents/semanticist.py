@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import ast
 import os
+import re
+import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
@@ -36,7 +39,7 @@ load_dotenv()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-EMBED_MODEL = "text-embedding-3-small"
+EMBED_MODEL = os.getenv("CARTOGRAPHER_EMBED_MODEL", "openai/text-embedding-3-small")
 EMBED_DIM = 1536
 
 MAX_SOURCE_BYTES = 32_000  # truncate modules beyond this size
@@ -44,10 +47,14 @@ KMEANS_SEED = 42  # fixed seed for deterministic clustering
 KMEANS_K_MIN = 5
 KMEANS_K_MAX = 8
 
-MODEL_BULK = "google/gemini-2.0-flash-exp:free"
-MODEL_SYNTHESIS = "google/gemini-2.0-pro-exp-02-05"
+MODEL_BULK = os.getenv("CARTOGRAPHER_MODEL_BULK", "qwen/qwen-2.5-7b-instruct:free")
+MODEL_SYNTHESIS = os.getenv(
+    "CARTOGRAPHER_MODEL_SYNTHESIS", "mistralai/mistral-small-24b-instruct-2501:free"
+)
 
-OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+OPENROUTER_BASE = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+_OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL")
+_OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE")
 
 _FDE_QUESTIONS = [
     "What is the primary data ingestion path?",
@@ -90,19 +97,42 @@ class OpenRouterLLMClient:
             raise ValueError(
                 "OPENROUTER_API_KEY not set. Add it to your .env file or environment."
             )
+        self._headers = {"Authorization": f"Bearer {self._key}"}
+        if _OPENROUTER_SITE_URL:
+            self._headers["HTTP-Referer"] = _OPENROUTER_SITE_URL
+        if _OPENROUTER_APP_TITLE:
+            self._headers["X-Title"] = _OPENROUTER_APP_TITLE
+        self._min_interval = (
+            float(os.getenv("CARTOGRAPHER_LLM_MIN_INTERVAL_MS", "0")) / 1000.0
+        )
+        self._retry_backoff_s = float(
+            os.getenv("CARTOGRAPHER_LLM_RETRY_BACKOFF_S", "5")
+        )
+        self._last_call_ts = 0.0
         self._http = httpx.Client(timeout=60.0)
 
     def complete(self, prompt: str, model: str, max_tokens: int = 1024) -> LLMResponse:
-        resp = self._http.post(
-            f"{OPENROUTER_BASE}/chat/completions",
-            headers={"Authorization": f"Bearer {self._key}"},
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-            },
-        )
-        resp.raise_for_status()
+        if self._min_interval > 0:
+            now = time.monotonic()
+            wait_s = self._min_interval - (now - self._last_call_ts)
+            if wait_s > 0:
+                time.sleep(wait_s)
+        for attempt in range(5):
+            resp = self._http.post(
+                f"{OPENROUTER_BASE}/chat/completions",
+                headers=self._headers,
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                },
+            )
+            if resp.status_code == 429 and attempt < 4:
+                time.sleep(self._retry_backoff_s * (attempt + 1))
+                continue
+            resp.raise_for_status()
+            break
+        self._last_call_ts = time.monotonic()
         body = resp.json()
         text = body["choices"][0]["message"]["content"]
         usage = body.get("usage", {})
@@ -114,12 +144,18 @@ class OpenRouterLLMClient:
         )
 
     def embed(self, texts: List[str], model: str = EMBED_MODEL) -> List[List[float]]:
+        if self._min_interval > 0:
+            now = time.monotonic()
+            wait_s = self._min_interval - (now - self._last_call_ts)
+            if wait_s > 0:
+                time.sleep(wait_s)
         resp = self._http.post(
             f"{OPENROUTER_BASE}/embeddings",
-            headers={"Authorization": f"Bearer {self._key}"},
+            headers=self._headers,
             json={"model": model, "input": texts},
         )
         resp.raise_for_status()
+        self._last_call_ts = time.monotonic()
         data = resp.json()["data"]
         return [item["embedding"] for item in data]
 
@@ -325,6 +361,33 @@ class TraceLogger:
         self._kg.add_trace_entry(entry)
 
 
+# ── Answer cleanup ────────────────────────────────────────────────────────────
+
+
+def _clean_answer_text(answer_text: str, question: str | None = None) -> str:
+    """Remove echoed question lines and inline file citations from answers."""
+    text = answer_text.strip()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if (
+        question
+        and lines
+        and lines[0].rstrip("?").lower() == question.rstrip("?").lower()
+    ):
+        lines = lines[1:]
+    # Remove inline file citations (we render evidence separately)
+    cleaned = []
+    for ln in lines:
+        ln = re.sub(r"file:[\\w./\\-_]+:L\\d+-\\d+", "", ln)
+        # Remove any bracketed method/file annotations
+        ln = re.sub(r"\[[^\]]*method:[^\]]*\]", "", ln)
+        ln = re.sub(r"\[[^\]]*file:[^\]]*\]", "", ln)
+        # Remove parenthetical method annotations
+        ln = re.sub(r"\(method:[^)]+\)", "", ln)
+        ln = re.sub(r"method:(static_analysis|llm_inference)", "", ln)
+        cleaned.append(ln.strip())
+    return " ".join([ln for ln in cleaned if ln]).strip()
+
+
 # ── Semanticist ───────────────────────────────────────────────────────────────
 
 
@@ -418,17 +481,42 @@ class Semanticist:
             )
             return None
 
-        prompt = (
-            "You are a senior data engineering analyst. "
-            "Analyse the Python source code below and write a 2-3 sentence purpose statement.\n"
-            "Rules:\n"
-            "- Base your answer ONLY on the code, not on any docstring.\n"
-            "- Cover: (1) business function, (2) key inputs/outputs, (3) what dependencies this module bridges.\n"
-            "- Do NOT quote or mirror docstrings.\n\n"
-            f"File: {module_node.path}\n\n"
-            f"```python\n{source}\n```\n\n"
-            "Purpose statement:"
-        )
+        lang = (module_node.language or "python").lower()
+        if lang == "python":
+            prompt = (
+                "You are a senior data engineering analyst. "
+                "Analyse the Python source code below and write a 2-3 sentence purpose statement.\n"
+                "Rules:\n"
+                "- Base your answer ONLY on the code, not on any docstring.\n"
+                "- Cover: (1) business function, (2) key inputs/outputs, (3) what dependencies this module bridges.\n"
+                "- Do NOT quote or mirror docstrings.\n\n"
+                f"File: {module_node.path}\n\n"
+                f"```python\n{source}\n```\n\n"
+                "Purpose statement:"
+            )
+        elif lang == "sql":
+            prompt = (
+                "You are a senior data engineering analyst. "
+                "Analyse the SQL/dbt model below and write a 2-3 sentence purpose statement.\n"
+                "Rules:\n"
+                "- Base your answer ONLY on the SQL.\n"
+                "- Cover: (1) business function, (2) key inputs/outputs, (3) key transformations.\n"
+                "- Keep it concrete and avoid generic phrasing.\n\n"
+                f"File: {module_node.path}\n\n"
+                f"```sql\n{source}\n```\n\n"
+                "Purpose statement:"
+            )
+        else:
+            prompt = (
+                "You are a senior data engineering analyst. "
+                "Analyse the configuration below and write a 2-3 sentence purpose statement.\n"
+                "Rules:\n"
+                "- Base your answer ONLY on the configuration contents.\n"
+                "- Cover: (1) what this config defines, (2) key entities, (3) how it fits into the pipeline.\n\n"
+                f"File: {module_node.path}\n\n"
+                f"```yaml\n{source}\n```\n\n"
+                "Purpose statement:"
+            )
         resp = self._call(prompt, "bulk", tracer, filepath=module_node.path)
         if resp is None:
             return None
@@ -436,40 +524,71 @@ class Semanticist:
         purpose = resp.text.strip()
 
         # Doc drift detection
-        existing_doc = extract_module_docstring(source_code)
-        if existing_doc:
-            drift_prompt = (
-                "Compare these two descriptions of the same Python module.\n"
-                "Reply with exactly one word: MATCH if they describe the same behaviour, "
-                "DRIFT if they contradict each other.\n\n"
-                f"Generated description:\n{purpose}\n\n"
-                f"Existing docstring:\n{existing_doc}\n\n"
-                "Verdict:"
-            )
-            drift_resp = self._call(
-                drift_prompt, "bulk", tracer, filepath=module_node.path
-            )
-            if drift_resp and "DRIFT" in drift_resp.text.upper():
-                kg.add_warning(
-                    WarningRecord(
-                        code="DOC_DRIFT",
-                        message=(
-                            f"Documentation drift detected in {module_node.path}.\n"
-                            f"Generated: {purpose}\n"
-                            f"Existing docstring: {existing_doc}"
-                        ),
-                        file=module_node.path,
-                        analyzer="Semanticist",
-                        severity=WarningSeverity.WARNING,
-                    )
+        if lang == "python":
+            existing_doc = extract_module_docstring(source_code)
+            if existing_doc:
+                drift_prompt = (
+                    "Compare these two descriptions of the same Python module.\n"
+                    "Reply with exactly one word: MATCH if they describe the same behaviour, "
+                    "DRIFT if they contradict each other.\n\n"
+                    f"Generated description:\n{purpose}\n\n"
+                    f"Existing docstring:\n{existing_doc}\n\n"
+                    "Verdict:"
                 )
-                # Update node data
-                if module_node.id in kg.graph.nodes:
-                    kg.graph.nodes[module_node.id]["doc_drift"] = True
-                return purpose  # still return the good statement
+                drift_resp = self._call(
+                    drift_prompt, "bulk", tracer, filepath=module_node.path
+                )
+                if drift_resp and "DRIFT" in drift_resp.text.upper():
+                    kg.add_warning(
+                        WarningRecord(
+                            code="DOC_DRIFT",
+                            message=(
+                                f"Documentation drift detected in {module_node.path}.\n"
+                                f"Generated: {purpose}\n"
+                                f"Existing docstring: {existing_doc}"
+                            ),
+                            file=module_node.path,
+                            analyzer="Semanticist",
+                            severity=WarningSeverity.WARNING,
+                        )
+                    )
+                    # Update node data
+                    if module_node.id in kg.graph.nodes:
+                        kg.graph.nodes[module_node.id]["doc_drift"] = True
+                    return purpose  # still return the good statement
 
         _ = confidence  # used to inform callers if needed
         return purpose
+
+    def _fallback_purpose_statement(
+        self, module_node: ModuleNode, source_code: str
+    ) -> str:
+        """Heuristic purpose statement when LLM is unavailable."""
+        lang = (module_node.language or "python").lower()
+        path = module_node.path or "unknown"
+        if lang == "sql":
+            refs = re.findall(
+                r"\{\{\s*ref\(\s*['\"]([^'\"]+)['\"]\s*\)\s*\}\}", source_code
+            )
+            sources = re.findall(
+                r"\{\{\s*source\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)\s*\}\}",
+                source_code,
+            )
+            deps = refs + [f"{s}.{t}" for s, t in sources]
+            target = Path(path).stem
+            if deps:
+                return (
+                    f"SQL model that builds `{target}` from upstream sources "
+                    f"{', '.join(sorted(set(deps)))}."
+                )
+            return f"SQL model that defines `{target}`; upstream sources not resolved."
+        if lang in ("yaml", "yml"):
+            if "sources:" in source_code:
+                return "YAML config defining dbt sources and dataset metadata."
+            if "models:" in source_code:
+                return "YAML config defining dbt model metadata and tests."
+            return "YAML configuration file supporting the data pipeline."
+        return f"Module `{path}`; purpose not inferred (LLM unavailable)."
 
     # ── Domain clustering ─────────────────────────────────────────────────────
 
@@ -480,6 +599,20 @@ class Semanticist:
         Embed purpose statements and run k-means to group modules into domain clusters.
         Returns domain_map: {domain_label: [module_path, ...]}
         """
+        if os.getenv("CARTOGRAPHER_DISABLE_EMBEDDINGS", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            tracer._kg.add_warning(
+                WarningRecord(
+                    code="EMBED_DISABLED",
+                    message="Embeddings disabled via CARTOGRAPHER_DISABLE_EMBEDDINGS.",
+                    analyzer="Semanticist",
+                    severity=WarningSeverity.WARNING,
+                )
+            )
+            return {}
         from sklearn.cluster import KMeans  # type: ignore[import-untyped]
 
         eligible = [m for m in module_nodes if m.purpose_statement]
@@ -495,11 +628,33 @@ class Semanticist:
             confidence="inferred",
             detail=f"model={EMBED_MODEL} n={len(texts)}",
         )
-        embeddings = self._client.embed(texts, model=EMBED_MODEL)
+        try:
+            embeddings = self._client.embed(texts, model=EMBED_MODEL)
+        except Exception as exc:
+            tracer._kg.add_warning(
+                WarningRecord(
+                    code="EMBED_ERROR",
+                    message=str(exc),
+                    analyzer="Semanticist",
+                    severity=WarningSeverity.WARNING,
+                )
+            )
+            return {}
 
         k = min(max(KMEANS_K_MIN, len(eligible) // 2), KMEANS_K_MAX, len(eligible))
         kmeans = KMeans(n_clusters=k, random_state=KMEANS_SEED, n_init=10)
-        labels = kmeans.fit_predict(embeddings)
+        try:
+            labels = kmeans.fit_predict(embeddings)
+        except Exception as exc:
+            tracer._kg.add_warning(
+                WarningRecord(
+                    code="CLUSTER_ERROR",
+                    message=str(exc),
+                    analyzer="Semanticist",
+                    severity=WarningSeverity.WARNING,
+                )
+            )
+            return {}
 
         # Group purpose statements by cluster for label generation
         cluster_groups: Dict[int, List[Tuple[ModuleNode, str]]] = {}
@@ -594,13 +749,22 @@ class Semanticist:
             "  - Write 2-4 sentences.\n"
             "  - Cite at least one specific file from the evidence (format: file:path/to/file.py:L1-1).\n"
             "  - Label each citation as method:static_analysis or method:llm_inference.\n"
-            "Format: number each answer Q1: ... Q2: ... etc.\n\n"
+            "  - Do NOT repeat the question in your answer text.\n"
+            "Format: number each answer exactly as Q1: ... Q2: ... Q3: ... Q4: ... Q5: ...\n\n"
             f"=== STATIC EVIDENCE ===\n{context}\n\n"
             f"=== QUESTIONS ===\n{questions_block}\n\n"
             "Answers (cite file:path:LN-M for each fact):"
         )
 
-        resp = self._call(prompt, "synthesis", tracer)
+        use_bulk = os.getenv("CARTOGRAPHER_USE_BULK_FOR_DAY_ONE", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        resp = self._call(prompt, "bulk" if use_bulk else "synthesis", tracer)
+        if resp is None:
+            # Fallback to bulk model to avoid rate limits on synthesis tier
+            resp = self._call(prompt, "bulk", tracer)
         if resp is None:
             kg.add_warning(
                 WarningRecord(
@@ -610,16 +774,109 @@ class Semanticist:
                     severity=WarningSeverity.ERROR,
                 )
             )
-            return {}
+            return self._fallback_day_one_answers(kg, top5, sources, sinks)
 
         raw = resp.text.strip()
         answers = self._parse_day_one_answers(raw, kg, top5)
+        if not answers or len(answers) < 5:
+            kg.add_warning(
+                WarningRecord(
+                    code="DAY_ONE_PARSE_ERROR",
+                    message="LLM output did not match expected Q1..Q5 format; using heuristic fallback.",
+                    analyzer="Semanticist",
+                    severity=WarningSeverity.WARNING,
+                )
+            )
+            return self._fallback_day_one_answers(kg, top5, sources, sinks)
         tracer.log(
             agent="Semanticist",
             action="day_one_questions_answered",
             evidence_source="llm_inference",
             confidence="inferred",
             detail=f"n_answers={len(answers)}",
+        )
+        return answers
+
+    def _fallback_day_one_answers(
+        self, kg: KnowledgeGraph, top5: List[str], sources: List[str], sinks: List[str]
+    ) -> Dict[str, AnswerWithCitation]:
+        """Heuristic Day-One answers when LLM is unavailable."""
+
+        def dataset_names(node_ids: List[str]) -> List[str]:
+            names: List[str] = []
+            for nid in node_ids:
+                data = kg.graph.nodes.get(nid, {})
+                if data.get("type") == "dataset":
+                    names.append(data.get("name", nid))
+            return names
+
+        src_names = dataset_names(sources)
+        sink_names = dataset_names(sinks)
+
+        def cite_default() -> List[Citation]:
+            if top5:
+                return [
+                    Citation(
+                        file=top5[0],
+                        line_range="L1-1",
+                        method="static_analysis",
+                    )
+                ]
+            return [
+                Citation(
+                    file="unknown",
+                    line_range="L1-1",
+                    method="static_analysis",
+                )
+            ]
+
+        answers: Dict[str, AnswerWithCitation] = {}
+        answers["Q1"] = AnswerWithCitation(
+            answer=(
+                "Primary ingestion appears to start from sources: "
+                + (", ".join(src_names) if src_names else "no sources identified yet.")
+            ),
+            citations=cite_default(),
+            confidence="inferred",
+        )
+        answers["Q2"] = AnswerWithCitation(
+            answer=(
+                "Most critical outputs appear to be the final sinks: "
+                + (
+                    ", ".join(sink_names[:5])
+                    if sink_names
+                    else "no sinks identified yet."
+                )
+            ),
+            citations=cite_default(),
+            confidence="inferred",
+        )
+        answers["Q3"] = AnswerWithCitation(
+            answer=(
+                "Blast radius is largest for top-ranked modules; downstream datasets likely impacted include "
+                + (
+                    ", ".join(sink_names[:5])
+                    if sink_names
+                    else "the downstream graph is currently unclear."
+                )
+            ),
+            citations=cite_default(),
+            confidence="inferred",
+        )
+        answers["Q4"] = AnswerWithCitation(
+            answer=(
+                "Business logic appears concentrated in transformation models rather than application code, "
+                "based on the prevalence of SQL/dbt models and limited Python modules."
+            ),
+            citations=cite_default(),
+            confidence="inferred",
+        )
+        answers["Q5"] = AnswerWithCitation(
+            answer=(
+                "High-velocity files are not available from LLM analysis; see static velocity metrics in CODEBASE."
+            ),
+            citations=cite_default(),
+            confidence="inferred",
         )
         return answers
 
@@ -655,12 +912,33 @@ class Semanticist:
                 for path, start, end in cite_pattern
             ]
 
+            # If LLM only provided L1-1, upgrade to module line range when available
+            upgraded: List[Citation] = []
+            for c in citations:
+                if c.line_range == "L1-1":
+                    node = kg.graph.nodes.get(c.file)
+                    if node and node.get("line_range"):
+                        upgraded.append(
+                            Citation(
+                                file=c.file,
+                                line_range=node["line_range"],
+                                method=c.method,
+                            )
+                        )
+                        continue
+                upgraded.append(c)
+            citations = upgraded
+
             # Ensure at least one static citation from top5 modules
             if not citations and top5:
+                line_range = "L1-1"
+                node = kg.graph.nodes.get(top5[0])
+                if node and node.get("line_range"):
+                    line_range = node["line_range"]
                 citations = [
                     Citation(
                         file=top5[0],
-                        line_range="L1-1",
+                        line_range=line_range,
                         method="static_analysis",
                     )
                 ]
@@ -683,7 +961,12 @@ class Semanticist:
                 )
 
             answers[q_key] = AnswerWithCitation(
-                answer=answer_text,
+                answer=_clean_answer_text(
+                    answer_text,
+                    question=_FDE_QUESTIONS[q_num - 1]
+                    if 0 < q_num <= len(_FDE_QUESTIONS)
+                    else None,
+                ),
                 citations=citations,
                 confidence="inferred",
             )
@@ -716,6 +999,12 @@ class Semanticist:
             if data.get("type") == "module":
                 try:
                     node = ModuleNode.model_validate(data)
+                    if os.getenv("CARTOGRAPHER_SKIP_YAML", "").lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                    } and (node.language or "").lower() in {"yaml", "yml"}:
+                        continue
                     module_nodes.append(node)
                 except Exception:
                     continue

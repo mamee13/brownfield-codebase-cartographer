@@ -40,6 +40,7 @@ class ModuleNode(BaseModel):
     change_velocity_30d: Optional[int] = None
     is_dead_code_candidate: Optional[bool] = None
     last_modified: Optional[datetime] = None
+    line_range: Optional[str] = None
     # Day 3 additions
     doc_drift: bool = False
     symbol_line_map: Dict[str, int] = Field(default_factory=dict)
