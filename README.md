@@ -5,12 +5,20 @@
 Run analysis on a local repository path:
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run python -m src.cli analyze <repo-path>
+uv run python -m src.cli analyze <repo-path>
 ```
+
+Run analysis by cloning a GitHub repo (use `--repo` and point it at a production-grade repository):
+
+```bash
+uv run python -m src.cli analyze --repo https://github.com/ORG/PRODUCTION_REPO
+```
+
+Artifacts are written to `.cartography/` inside the analyzed repo. When using `--repo`, the repo is cloned into `.cartography_repos/<repo-name>/`, and artifacts live at `.cartography_repos/<repo-name>/.cartography/`.
 
 Run quality gates:
 
 ```bash
 ./check.sh
-PRE_COMMIT_HOME=/tmp/pre-commit-cache UV_CACHE_DIR=/tmp/uv-cache uv run pre-commit run --all-files
+uv run pre-commit run --all-files
 ```

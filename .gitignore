@@ -208,6 +208,8 @@ __marimo__/
 
 # Cartography artifacts
 .cartography/
+.cartography_repos/
+
 
 # Test repo dummy
 test-repo/
