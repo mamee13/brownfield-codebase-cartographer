@@ -224,7 +224,10 @@ class TreeSitterAnalyzer:
             for child in node.children:
                 walk(child, current_class)
 
-        walk(tree.root_node)
+        try:
+            walk(tree.root_node)
+        except Exception as e:
+            result.warnings.append(f"Unexpected error during python analysis: {e}")
         return result
 
     def resolve_imports(
@@ -302,7 +305,10 @@ class TreeSitterAnalyzer:
             for child in node.children:
                 walk(child)
 
-        walk(tree.root_node)
+        try:
+            walk(tree.root_node)
+        except Exception as e:
+            result.warnings.append(f"Unexpected error during sql analysis: {e}")
         return result
 
     # ── YAML ────────────────────────────────────────────────────────────────
@@ -339,7 +345,10 @@ class TreeSitterAnalyzer:
             for child in node.children:
                 walk(child, path)
 
-        walk(tree.root_node, [])
+        try:
+            walk(tree.root_node, [])
+        except Exception as e:
+            result.warnings.append(f"Unexpected error during yaml analysis: {e}")
         return result
 
     # ── Python import resolution helpers ─────────────────────────────────────

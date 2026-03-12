@@ -220,7 +220,7 @@ def estimate_tokens(text: str, model: str = "") -> int:
     is_openai = any(prefix in model for prefix in ("gpt-", "cl100k", "text-embedding"))
     if is_openai:
         try:
-            import tiktoken  # type: ignore[import-not-found]
+            import tiktoken
 
             enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
             return len(enc.encode(text))
@@ -630,6 +630,10 @@ class Semanticist:
         )
         try:
             embeddings = self._client.embed(texts, model=EMBED_MODEL)
+            # Store embeddings on nodes for search
+            for mod, emb in zip(eligible, embeddings):
+                if mod.id in tracer._kg.graph.nodes:
+                    tracer._kg.graph.nodes[mod.id]["embedding"] = emb
         except Exception as exc:
             tracer._kg.add_warning(
                 WarningRecord(

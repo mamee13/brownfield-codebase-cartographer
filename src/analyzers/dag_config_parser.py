@@ -232,35 +232,63 @@ class DbtSchemaAnalyzer:
 
         # models section
         for model_def in data.get("models", []) or []:
-            model = DbtModel(
-                name=model_def.get("name", ""),
-                description=model_def.get("description"),
-                owner=_deep_get(model_def, "meta", "owner"),
-            )
-            for col in model_def.get("columns", []) or []:
-                if col.get("name"):
-                    model.columns.append(col["name"])
-                for test in col.get("tests", []) or []:
+            if not isinstance(model_def, dict):
+                continue
+            try:
+                model = DbtModel(
+                    name=model_def.get("name", ""),
+                    description=model_def.get("description"),
+                    owner=_deep_get(model_def, "meta", "owner"),
+                )
+                for col in model_def.get("columns", []) or []:
+                    if isinstance(col, dict) and col.get("name"):
+                        model.columns.append(col["name"])
+                        for test in col.get("tests", []) or []:
+                            tname = (
+                                test if isinstance(test, str) else list(test.keys())[0]
+                            )
+                            model.tests.append(tname)
+                for test in model_def.get("tests", []) or []:
                     tname = test if isinstance(test, str) else list(test.keys())[0]
                     model.tests.append(tname)
-            for test in model_def.get("tests", []) or []:
-                tname = test if isinstance(test, str) else list(test.keys())[0]
-                model.tests.append(tname)
-            result.models.append(model)
+                result.models.append(model)
+            except Exception as e:
+                result.warnings.append(
+                    WarningRecord(
+                        code="MODEL_PARSE_ERROR",
+                        message=f"Error parsing model definition: {e}",
+                        file=filepath,
+                        analyzer="DbtSchemaAnalyzer",
+                        severity=WarningSeverity.WARNING,
+                    )
+                )
 
         # sources section
         for src_def in data.get("sources", []) or []:
-            src = DbtSource(
-                name=src_def.get("name", ""),
-                database=src_def.get("database"),
-                schema_name=src_def.get("schema"),
-                description=src_def.get("description"),
-                owner=_deep_get(src_def, "meta", "owner"),
-            )
-            for tbl in src_def.get("tables", []) or []:
-                if tbl.get("name"):
-                    src.tables.append(tbl["name"])
-            result.sources.append(src)
+            if not isinstance(src_def, dict):
+                continue
+            try:
+                src = DbtSource(
+                    name=src_def.get("name", ""),
+                    database=src_def.get("database"),
+                    schema_name=src_def.get("schema"),
+                    description=src_def.get("description"),
+                    owner=_deep_get(src_def, "meta", "owner"),
+                )
+                for tbl in src_def.get("tables", []) or []:
+                    if isinstance(tbl, dict) and tbl.get("name"):
+                        src.tables.append(tbl["name"])
+                result.sources.append(src)
+            except Exception as e:
+                result.warnings.append(
+                    WarningRecord(
+                        code="SOURCE_PARSE_ERROR",
+                        message=f"Error parsing source definition: {e}",
+                        file=filepath,
+                        analyzer="DbtSchemaAnalyzer",
+                        severity=WarningSeverity.WARNING,
+                    )
+                )
 
         return result
 
