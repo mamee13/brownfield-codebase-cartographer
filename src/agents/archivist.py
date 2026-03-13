@@ -192,8 +192,11 @@ class Archivist:
             + ("\n".join(vel_lines) or "_No git velocity data available._")
         )
 
-        # 7. Module Purpose Index
-        mpi_lines: List[str] = []
+        # 7. Module Purpose Index — rendered as a table for easy scanning
+        mpi_rows: List[str] = [
+            "| Module | Purpose |",
+            "|--------|---------|",
+        ]
         for path, data in sorted(
             [
                 (data.get("path", nid), data)
@@ -203,11 +206,16 @@ class Archivist:
             key=lambda x: x[0],
         ):
             purpose = data.get("purpose_statement", "No purpose statement generated.")
-            mpi_lines.append(f"- **`{path}`**: {purpose} (source: llm_inference)")
+            # Escape pipe characters to avoid breaking the markdown table
+            purpose_safe = purpose.replace("|", "\\|")
+            path_safe = (path or "").replace("|", "\\|")
+            mpi_rows.append(
+                f"| `{path_safe}` | {purpose_safe} (source: llm_inference) |"
+            )
 
         sections.append(
             "## Module Purpose Index\n\n"
-            + ("\n".join(mpi_lines) or "_No modules found._")
+            + ("\n".join(mpi_rows) if len(mpi_rows) > 2 else "_No modules found._")
         )
 
         content = (

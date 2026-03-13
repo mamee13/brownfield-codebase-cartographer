@@ -196,6 +196,75 @@ class Hydrologist:
         direction: str,
     ) -> None:
         for ref in refs:
+            # ── Detect inline SQL queries ────────────────────────────────────
+            # When pandas.read_sql / sqlalchemy.execute pass a raw SQL string,
+            # the DataRef.name holds the full query text.  Parse it to extract
+            # real table names instead of creating a dataset node whose id is
+            # the entire query string.
+            sql_keywords = (
+                "select ",
+                "insert ",
+                "update ",
+                "delete ",
+                "with ",
+                "create ",
+            )
+            name_lower = ref.name.strip().lower()
+            if any(name_lower.startswith(kw) for kw in sql_keywords):
+                queries, _ = self._sql.extract_lineage(ref.name, filepath=rel)
+                if queries:
+                    for q in queries:
+                        line_range = f"{ref.line}-{ref.line}"
+                        tx_id = _transformation_id(rel, line_range)
+                        sources = list(q.sources)
+                        targets = list(q.targets)
+
+                        for s in sources:
+                            _ensure_dataset(kg, s)
+                        for t in targets:
+                            _ensure_dataset(kg, t)
+
+                        tx_node = TransformationNode(
+                            id=tx_id,
+                            source_datasets=sources,
+                            target_datasets=targets,
+                            transformation_type=ref.api,
+                            source_file=rel,
+                            line_range=line_range,
+                        )
+                        kg.add_node(tx_node)
+
+                        for s in sources:
+                            kg.add_edge(
+                                Edge(
+                                    source=_dataset_id(s),
+                                    target=tx_id,
+                                    type=EdgeType.CONSUMES,
+                                    metadata={
+                                        "transformation_type": ref.api,
+                                        "source_file": rel,
+                                        "line_range": f"L{ref.line}-L{ref.line}",
+                                    },
+                                )
+                            )
+                        for t in targets:
+                            kg.add_edge(
+                                Edge(
+                                    source=tx_id,
+                                    target=_dataset_id(t),
+                                    type=EdgeType.PRODUCES,
+                                    metadata={
+                                        "transformation_type": ref.api,
+                                        "source_file": rel,
+                                        "line_range": f"L{ref.line}-L{ref.line}",
+                                    },
+                                )
+                            )
+                    continue  # handled as SQL — skip generic ref processing
+                # If SQLAnalyzer couldn't parse, fall through to generic handling
+                # which will create a dataset with the truncated query as name
+
+            # ── Generic (non-SQL) ref ────────────────────────────────────────
             ds_id = _dataset_id(ref.name)
             tx_id = _transformation_id(rel, f"{ref.line}-{ref.line}")
             _ensure_dataset(kg, ref.name)
