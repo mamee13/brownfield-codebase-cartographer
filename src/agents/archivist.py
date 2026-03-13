@@ -7,8 +7,7 @@ Produces all living artifact outputs from the enriched KnowledgeGraph:
   - .cartography/cartography_trace.jsonl  (JSONL audit log)
 """
 
-from __future__ import annotations
-
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -16,7 +15,7 @@ from typing import Any, Dict, List, Optional
 from src.graph.knowledge_graph import KnowledgeGraph
 from src.models.schema import ModuleNode, TraceEntry
 
-_CARTOGRAPHY_DIR = ".cartography"
+_CARTOGRAPHY_DIR = os.getenv("CARTOGRAPHER_DIR", ".cartography")
 
 _FDE_QUESTIONS = [
     "What is the primary data ingestion path?",
@@ -94,7 +93,8 @@ class Archivist:
                 key=lambda x: x[1],
                 reverse=True,
             )[:5]
-        except Exception:
+        except (ImportError, RuntimeError, ValueError):
+            # Fallback for PageRank failures (e.g. no edges or missing module)
             top5 = [(m.id, 0.0) for m in module_nodes[:5]]
 
         cp_lines: List[str] = []
@@ -157,7 +157,8 @@ class Archivist:
                 debt_lines.append(
                     f"- **Circular dependency**: {', '.join(sorted(scc))} (source: static_analysis)"
                 )
-        except Exception:
+        except (ImportError, ValueError, RuntimeError):
+            # networkx optional or graph issues
             pass
         # Doc drift warnings
         for w in kg.warnings:
@@ -190,6 +191,32 @@ class Archivist:
         sections.append(
             "## High-Velocity Files\n\n"
             + ("\n".join(vel_lines) or "_No git velocity data available._")
+        )
+
+        # 7. Module Purpose Index — rendered as a table for easy scanning
+        mpi_rows: List[str] = [
+            "| Module | Purpose |",
+            "|--------|---------|",
+        ]
+        for path, data in sorted(
+            [
+                (data.get("path", nid), data)
+                for nid, data in kg.graph.nodes(data=True)
+                if data.get("type") == "module"
+            ],
+            key=lambda x: x[0],
+        ):
+            purpose = data.get("purpose_statement", "No purpose statement generated.")
+            # Escape pipe characters to avoid breaking the markdown table
+            purpose_safe = purpose.replace("|", "\\|")
+            path_safe = (path or "").replace("|", "\\|")
+            mpi_rows.append(
+                f"| `{path_safe}` | {purpose_safe} (source: llm_inference) |"
+            )
+
+        sections.append(
+            "## Module Purpose Index\n\n"
+            + ("\n".join(mpi_rows) if len(mpi_rows) > 2 else "_No modules found._")
         )
 
         content = (
@@ -237,7 +264,7 @@ class Archivist:
             if answer_obj:
                 answer_text = answer_obj.answer
                 evidence_lines = "\n".join(
-                    f"- file:{c.file}:{c.line_range} (method: {c.method})"
+                    f"- file:{c.file}:{c.line_range} (source: {c.method})"
                     for c in answer_obj.citations
                 )
                 confidence = answer_obj.confidence
@@ -327,6 +354,7 @@ class Archivist:
             if data.get("type") == "module":
                 try:
                     nodes.append(ModuleNode.model_validate(data))
-                except Exception:
-                    pass
+                except (ValueError, TypeError):
+                    # Skip invalid module nodes that don't match the schema
+                    continue
         return nodes

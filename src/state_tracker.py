@@ -28,13 +28,14 @@ class FileStateTracker:
             json.dumps(self._current_state, indent=2), encoding="utf-8"
         )
 
-    def get_changed_files(self, repo_path: Path) -> Set[Path]:
+    def get_changed_files(self, repo_path: Path) -> tuple[Set[Path], Set[str]]:
         """
         Scans all supported files in the repo.
-        Returns the set of paths that are new or modified since the last save.
+        Returns (changed_paths, deleted_rel_paths).
         Populates _current_state with the latest mtimes.
         """
         changed: Set[Path] = set()
+        actually_present: Set[str] = set()
 
         # Scan Python, SQL, YAML
         for ext in ["*.py", "*.sql", "*.yml", "*.yaml"]:
@@ -50,6 +51,7 @@ class FileStateTracker:
                     mtime = file_path.stat().st_mtime
                     rel_path = str(file_path.relative_to(repo_path))
                     self._current_state[rel_path] = mtime
+                    actually_present.add(rel_path)
 
                     if (
                         rel_path not in self._previous_state
@@ -59,4 +61,7 @@ class FileStateTracker:
                 except OSError:
                     continue
 
-        return changed
+        # Detect deletions
+        deleted = set(self._previous_state.keys()) - actually_present
+
+        return changed, deleted

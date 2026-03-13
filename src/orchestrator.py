@@ -8,8 +8,11 @@ from src.graph.knowledge_graph import KnowledgeGraph
 
 class Orchestrator:
     def __init__(self, repo_path: str) -> None:
+        import os
+
         self.repo_path = Path(repo_path).resolve()
-        self.cartography_dir = self.repo_path / ".cartography"
+        cartography_dir_name = os.getenv("CARTOGRAPHER_DIR", ".cartography")
+        self.cartography_dir = self.repo_path / cartography_dir_name
         self.cartography_dir.mkdir(parents=True, exist_ok=True)
 
     def analyze(self, incremental: bool = False, on_progress: Any = None) -> None:
@@ -24,11 +27,15 @@ class Orchestrator:
 
         files_to_process = None
         if incremental:
-            files_to_process = tracker.get_changed_files(self.repo_path)
-            log(f"Incremental mode: {len(files_to_process)} files changed.")
-            if not files_to_process:
+            files_to_process, deleted_files = tracker.get_changed_files(self.repo_path)
+            log(
+                f"Incremental mode: {len(files_to_process)} files changed, {len(deleted_files)} deleted."
+            )
+            if not files_to_process and not deleted_files:
                 log("No changes detected. Analysis skipped.")
                 return
+        else:
+            files_to_process, deleted_files = None, set()
 
         # Run Surveyor → module graph
         log("Running Surveyor (module graph)...")
@@ -39,6 +46,15 @@ class Orchestrator:
             base_module_kg = KnowledgeGraph.load(
                 self.cartography_dir / "module_graph.json"
             )
+            # Remove deleted files from base
+            for path in deleted_files:
+                nodes_to_remove = [
+                    n
+                    for n, d in base_module_kg.graph.nodes(data=True)
+                    if d.get("path") == path
+                ]
+                base_module_kg.graph.remove_nodes_from(nodes_to_remove)
+
             module_kg = self._merge_knowledge_graphs(base_module_kg, module_kg)
 
         module_kg.save(self.cartography_dir / "module_graph.json")
@@ -52,6 +68,15 @@ class Orchestrator:
             base_lineage_kg = KnowledgeGraph.load(
                 self.cartography_dir / "lineage_graph.json"
             )
+            # Remove deleted files from base (Hydrologist nodes often store path in 'source_file' or similar)
+            for path in deleted_files:
+                nodes_to_remove = [
+                    n
+                    for n, d in base_lineage_kg.graph.nodes(data=True)
+                    if d.get("path") == path or d.get("source_file") == path
+                ]
+                base_lineage_kg.graph.remove_nodes_from(nodes_to_remove)
+
             lineage_kg = self._merge_knowledge_graphs(base_lineage_kg, lineage_kg)
 
         lineage_kg.save(self.cartography_dir / "lineage_graph.json")

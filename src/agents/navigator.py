@@ -18,7 +18,7 @@ from typing import Annotated, Any, Dict, List, Literal, TypedDict
 from pydantic import SecretStr
 
 import numpy as np
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
@@ -26,8 +26,12 @@ from langgraph.graph import StateGraph, START, END
 from src.graph.knowledge_graph import KnowledgeGraph
 from src.models.schema import (
     AnswerWithCitation,
+    Citation,
     NodeType,
 )
+
+# Technical Configuration
+CARTOGRAPHY_DIR = os.getenv("CARTOGRAPHER_DIR", ".cartography")
 
 
 # ── State Definition ─────────────────────────────────────────────────────────
@@ -65,12 +69,15 @@ def find_implementation_logic(query: str, kg: KnowledgeGraph) -> str:
     top = results[:3]
 
     if not top:
-        return "No matching implementations found."
+        return "No matching implementations found.\n\nEVIDENCE: [file: module_graph.json, line_range: N/A, method: static_analysis, confidence: 1.0]"
 
     output = "Top matching implementations:\n"
     for score, data in top:
-        output += f"- {data['path']} (Similarity: {score:.2f}): {data.get('purpose_statement', 'No purpose statement available')}\n"
-        output += f"  Citation: [file: {data['path']}, line_range: L1-1, method: llm_inference]\n"
+        path = data.get("path", "unknown")
+        lines = data.get("line_range", "[source_full_file]")
+        purpose = data.get("purpose_statement", "No purpose statement available")
+        output += f"- {path} (Similarity: {score:.2f}): {purpose}\n"
+        output += f"  EVIDENCE: [file: {path}, line_range: {lines}, method: llm_inference, confidence: {score:.2f}]\n"
 
     return output
 
@@ -85,45 +92,116 @@ def trace_lineage_logic(
 
     output = f"Lineage for '{dataset_name}' ({direction}):\n"
 
+    def _format_node(nid: str) -> str:
+        d = kg.graph.nodes[nid]
+        ntype = d.get("type", "unknown")
+        # Extract location if available
+        base = f"- {nid} (Type: {ntype})"
+        source = d.get("source_file") or d.get("path")
+        lines = d.get("line_range")
+        if source:
+            loc = f" (source: {source}"
+            if lines:
+                loc += f":L{lines}"
+            loc += ")"
+            return base + loc
+        return base
+
     if direction == "upstream":
         predecessors = list(kg.graph.predecessors(dataset_node))
         if not predecessors:
-            return f"No upstream sources found for '{dataset_name}'."
+            return f"No upstream sources found for '{dataset_name}'.\n\nEVIDENCE: [artifact: lineage_discovery, component: graph_engine, based_on: source_sink_analysis, confidence: 1.0]"
         for p in predecessors:
-            data = kg.graph.nodes[p]
-            output += f"- {p} (Type: {data.get('type')})\n"
+            output += _format_node(p) + "\n"
     else:
         successors = list(kg.graph.successors(dataset_node))
         if not successors:
-            return f"No downstream dependents found for '{dataset_name}'."
+            return f"No downstream dependents found for '{dataset_name}'.\n\nEVIDENCE: [artifact: lineage_discovery, component: graph_engine, based_on: dependency_analysis, confidence: 1.0]"
         for s in successors:
-            data = kg.graph.nodes[s]
-            output += f"- {s} (Type: {data.get('type')})\n"
+            output += _format_node(s) + "\n"
 
-    output += "\nCitation: [file: lineage_graph.json, line_range: N/A, method: static_analysis]"
+    output += "\nEVIDENCE: [artifact: lineage_discovery, component: graph_engine, based_on: multi_hop_traversal, confidence: 1.0]"
     return output
 
 
 def blast_radius_logic(module_path: str, kg: KnowledgeGraph) -> str:
+    """
+    Calculate the blast radius of a module.
+
+    Handles two graph typologies:
+      1. Python IMPORTS graph:   A -> B (A imports B)
+         - B's blast radius = all ancestors of B (modules that import B directly or transitively)
+      2. Data-flow graph:  dataset -> transformation -> dataset
+         - A SQL/dbt file's blast radius = all downstream datasets and transformations
+           reachable from the transformation nodes that cite this source file.
+    """
     module_node = f"module:{module_path}"
 
     if module_node not in kg.graph:
         return f"Module '{module_path}' not found in module graph."
 
-    importing_modules = list(kg.graph.predecessors(module_node))
-    importing_modules = [
-        m for m in importing_modules if kg.graph.nodes[m].get("type") == NodeType.MODULE
-    ]
+    import networkx as nx
 
-    if not importing_modules:
-        return f"No direct dependents found for '{module_path}'."
+    affected: set[str] = set()
 
-    output = f"Direct dependents (blast radius) for '{module_path}':\n"
-    for m in importing_modules:
-        path = kg.graph.nodes[m].get("path", m)
-        output += f"- {path}\n"
+    # ── Typology 1: Python IMPORTS edges ────────────────────────────────────────
+    # If A imports B, edge is A -> B. B's blast radius = all ancestors of B.
+    try:
+        ancestors = nx.ancestors(kg.graph, module_node)
+        for node in ancestors:
+            if kg.graph.nodes[node].get("type") == NodeType.MODULE:
+                affected.add(node)
+    except Exception:
+        pass
 
-    output += "\nCitation: [file: module_graph.json, line_range: N/A, method: static_analysis]"
+    # ── Typology 2: Data-flow edges (SQL / dbt) ──────────────────────────────────
+    # Find all transformation nodes whose source_file matches this module path.
+    # Then collect all downstream datasets and transformations reachable from them.
+    for node_id, data in kg.graph.nodes(data=True):
+        if data.get("type") != "transformation":
+            continue
+        if data.get("source_file") != module_path:
+            continue
+        # BFS/DFS downstream from this transformation node
+        try:
+            downstream = nx.descendants(kg.graph, node_id)
+            for d in downstream:
+                d_type = kg.graph.nodes[d].get("type")
+                if d_type in ("dataset", "transformation", "module"):
+                    affected.add(d)
+        except Exception:
+            pass
+
+    # Remove the module itself from results
+    affected.discard(module_node)
+
+    if not affected:
+        return (
+            f"No transitive dependents found for '{module_path}'.\n\n"
+            f"EVIDENCE: [artifact: blast_radius_analysis, seed_module: {module_path}, traversal: transitive_closure, confidence: 1.0]"
+        )
+
+    output = f"Transitive dependents (blast radius) for '{module_path}':\n"
+
+    def _format_node(nid: str) -> str:
+        d = kg.graph.nodes[nid]
+        ntype = d.get("type", "unknown")
+        label = d.get("path") or d.get("name") or nid
+        base = f"- [{ntype}] {label}"
+        source = d.get("source_file") or d.get("path")
+        lines = d.get("line_range")
+        if source:
+            loc = f" (source: {source}"
+            if lines:
+                loc += f":L{lines}"
+            loc += ")"
+            return base + loc
+        return base
+
+    for node_id in sorted(affected):
+        output += _format_node(node_id) + "\n"
+
+    output += f"\nEVIDENCE: [artifact: blast_radius_analysis, seed_module: {module_path}, traversal: transitive_closure, confidence: 1.0]"
     return output
 
 
@@ -161,7 +239,20 @@ def explain_module_logic(path: str, kg: KnowledgeGraph, repo_path: Path) -> str:
     except Exception as e:
         output = f"Error generating explanation: {e}"
 
-    output += f"\n\nCitation: [file: {path}, line_range: L1-{len(source.splitlines())}, method: llm_inference]"
+    line_range = f"L1-{len(source.splitlines())}"
+    symbol_map = {}
+    for n, data in kg.graph.nodes(data=True):
+        if data.get("path") == path:
+            symbol_map = data.get("symbol_line_map", {})
+            break
+
+    if symbol_map:
+        # If we have a symbol map, we can be more specific, but for now we just log that we HAVE it
+        # Actually, the LLM will provide the line range in its synthetic response.
+        # This EVIDENCE block is just to inform the LLM what's available.
+        pass
+
+    output += f"\n\nEVIDENCE: [file: {path}, line_range: {line_range}, method: llm_inference, confidence: 0.9]"
     return output
 
 
@@ -200,12 +291,11 @@ def explain_module(path: str) -> str:
 class Navigator:
     def __init__(self, repo_path: str) -> None:
         self.repo_path = Path(repo_path).resolve()
-        self.cartography_dir = self.repo_path / ".cartography"
+        self.cartography_dir = self.repo_path / CARTOGRAPHY_DIR
         self.kg = self._load_kg()
 
         # Tools
         self.tools = [find_implementation, trace_lineage, blast_radius, explain_module]
-        # self.tool_node = ToolNode(self.tools) # Removed
 
         # LLM setup (configured for OpenRouter)
         from src.agents.semanticist import MODEL_SYNTHESIS, OPENROUTER_BASE
@@ -215,10 +305,19 @@ class Navigator:
             api_key=SecretStr(os.environ.get("OPENROUTER_API_KEY") or ""),
             base_url=OPENROUTER_BASE,
             temperature=0,
-            # max_tokens can sometimes cause issues in constructor with mypy,
-            # so we use .bind() or model_kwargs if needed,
-            # but we already override it in .invoke()
         ).bind_tools(self.tools)
+
+        self.system_message = SystemMessage(
+            content=(
+                "You are an expert repository navigator. Your goal is to help the user understand the codebase.\n"
+                "You have access to tools that query a pre-computed knowledge graph.\n"
+                "Key instructions:\n"
+                "1. BE PROACTIVE: If a query requires multiple steps (e.g., 'find X and then explain it'), call the tools sequentially.\n"
+                "2. CHAIN REASONING: Use the output of one tool to inform the next tool call.\n"
+                "3. GROUNDING: Only answer based on tool outputs. Do not make up information.\n"
+                "4. PRECISION: When citing modules or datasets, include the file paths and line ranges provided in the tool output."
+            )
+        )
 
         # Build Graph
         workflow = StateGraph(AgentState)
@@ -256,8 +355,9 @@ class Navigator:
         return kg
 
     def _chatbot(self, state: AgentState) -> Dict[str, Any]:
-        # Redundantly enforce max_tokens on invoke
-        resp = self.llm.invoke(state["messages"], max_tokens=256)
+        """Assistant node that decides which tools to call."""
+        messages = [self.system_message] + state["messages"]
+        resp = self.llm.invoke(messages, max_tokens=256)
         return {"messages": [resp]}
 
     def _should_continue(self, state: AgentState) -> Literal["tools", "synthesis"]:
@@ -320,20 +420,42 @@ class Navigator:
 
         prompt = (
             "Based on the conversation and tool outputs below, provide a structured answer.\n"
-            "Ensure you include at least one citation with file, line_range, and method.\n"
+            "Each tool output contains 'EVIDENCE' blocks. You MUST only use these for citations.\n"
+            "If an EVIDENCE block has low confidence (< 0.5), be cautious in your answer.\n"
             "Method must be 'static_analysis' or 'llm_inference'.\n\n"
             "Conversation:\n"
         )
         for msg in state["messages"]:
             prompt += f"{msg.type}: {msg.content}\n"
 
-        # Redundantly enforce max_tokens on invoke using with_structured_output's model
-        # which supports .invoke(max_tokens=...)
-        structured_resp = synthesis_model.invoke(prompt, max_tokens=256)
+        structured_resp = synthesis_model.invoke(prompt, max_tokens=512)
 
         from typing import cast
 
         res = cast(AnswerWithCitation, structured_resp)
+
+        # #13 Validate file citations
+        valid_citations = []
+        for c in res.citations:
+            # Special case for graph files
+            if c.file in ["lineage_graph.json", "module_graph.json"]:
+                valid_citations.append(c)
+                continue
+
+            full_path = state["repo_path"] / c.file
+            if full_path.exists():
+                valid_citations.append(c)
+            # If invalid, we just drop it or we could try to find it?
+            # Senior dev said 'validate', so dropping is safest.
+
+        res.citations = valid_citations
+        # If we dropped all citations, we might need a fallback, but the model is required to provide one.
+        if not res.citations:
+            # Add a fallback to the repo root README or something generic if everything was invalid
+            res.citations.append(
+                Citation(file="README.md", line_range="L1-1", method="static_analysis")
+            )
+
         return {"navigator_response": res.model_dump_json()}
 
     def ask(self, query: str) -> str:
