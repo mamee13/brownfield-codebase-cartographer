@@ -116,7 +116,19 @@ class PythonDataFlowAnalyzer:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            self._check_call(node, filepath, result)
+            try:
+                self._check_call(node, filepath, result)
+            except Exception as e:
+                result.warnings.append(
+                    WarningRecord(
+                        code="ANALYZE_ERROR",
+                        message=f"Error checking call node at L{node.lineno}: {e}",
+                        file=filepath,
+                        line=node.lineno,
+                        analyzer="PythonDataFlowAnalyzer",
+                        severity=WarningSeverity.WARNING,
+                    )
+                )
 
         return result
 

@@ -64,20 +64,24 @@ class Hydrologist:
         self._airflow = AirflowDagAnalyzer()
         self._dbt = DbtSchemaAnalyzer()
 
-    def run(self) -> KnowledgeGraph:
+    def run(self, files_to_process: set[Path] | None = None) -> KnowledgeGraph:
         kg = KnowledgeGraph()
 
-        self._ingest_sql_files(kg)
-        self._ingest_python_files(kg)
-        self._ingest_airflow_dags(kg)
-        self._ingest_dbt_schemas(kg)
+        self._ingest_sql_files(kg, files_to_process)
+        self._ingest_python_files(kg, files_to_process)
+        self._ingest_airflow_dags(kg, files_to_process)
+        self._ingest_dbt_schemas(kg, files_to_process)
 
         return kg
 
     # ── SQL ────────────────────────────────────────────────────────────────────
 
-    def _ingest_sql_files(self, kg: KnowledgeGraph) -> None:
+    def _ingest_sql_files(
+        self, kg: KnowledgeGraph, files_to_process: set[Path] | None
+    ) -> None:
         for sql_path in self.root.rglob("*.sql"):
+            if files_to_process is not None and sql_path not in files_to_process:
+                continue
             rel = str(sql_path.relative_to(self.root))
             try:
                 sql = sql_path.read_text(encoding="utf-8", errors="replace")
@@ -166,8 +170,12 @@ class Hydrologist:
 
     # ── Python ─────────────────────────────────────────────────────────────────
 
-    def _ingest_python_files(self, kg: KnowledgeGraph) -> None:
+    def _ingest_python_files(
+        self, kg: KnowledgeGraph, files_to_process: set[Path] | None
+    ) -> None:
         for py_path in self.root.rglob("*.py"):
+            if files_to_process is not None and py_path not in files_to_process:
+                continue
             rel = str(py_path.relative_to(self.root))
             # Skip test/config files
             if any(p in rel for p in ["test_", "__pycache__", ".venv", "setup.py"]):
@@ -231,8 +239,12 @@ class Hydrologist:
 
     # ── Airflow ────────────────────────────────────────────────────────────────
 
-    def _ingest_airflow_dags(self, kg: KnowledgeGraph) -> None:
+    def _ingest_airflow_dags(
+        self, kg: KnowledgeGraph, files_to_process: set[Path] | None
+    ) -> None:
         for dag_path in self.root.rglob("*.py"):
+            if files_to_process is not None and dag_path not in files_to_process:
+                continue
             # Quick heuristic: airflow dags import DAG
             try:
                 content = dag_path.read_text(encoding="utf-8", errors="replace")
@@ -281,8 +293,12 @@ class Hydrologist:
 
     # ── dbt ────────────────────────────────────────────────────────────────────
 
-    def _ingest_dbt_schemas(self, kg: KnowledgeGraph) -> None:
+    def _ingest_dbt_schemas(
+        self, kg: KnowledgeGraph, files_to_process: set[Path] | None
+    ) -> None:
         for schema_path in self.root.rglob("schema.yml"):
+            if files_to_process is not None and schema_path not in files_to_process:
+                continue
             rel = str(schema_path.relative_to(self.root))
             try:
                 content = schema_path.read_text(encoding="utf-8")

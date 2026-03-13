@@ -50,12 +50,12 @@ def test_surveyor_builds_import_edges_and_metrics(tmp_path: Path) -> None:
     schema = kg.to_schema()
 
     edges = {(edge.source, edge.target) for edge in schema.edges}
-    assert ("src/a.py", "src/b.py") in edges
-    assert ("src/a.py", "src/c.py") in edges
-    assert ("src/b.py", "src/c.py") in edges
+    assert ("module:src/a.py", "module:src/b.py") in edges
+    assert ("module:src/a.py", "module:src/c.py") in edges
+    assert ("module:src/b.py", "module:src/c.py") in edges
 
-    node_d = schema.nodes["src/d.py"]
-    node_c = schema.nodes["src/c.py"]
+    node_d = schema.nodes["module:src/d.py"]
+    node_c = schema.nodes["module:src/c.py"]
 
     assert isinstance(node_d, ModuleNode)
     assert node_d.is_dead_code_candidate is True

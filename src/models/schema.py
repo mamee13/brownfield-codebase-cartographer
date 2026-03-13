@@ -44,6 +44,7 @@ class ModuleNode(BaseModel):
     # Day 3 additions
     doc_drift: bool = False
     symbol_line_map: Dict[str, int] = Field(default_factory=dict)
+    embedding: Optional[List[float]] = None
 
 
 class DatasetNode(BaseModel):

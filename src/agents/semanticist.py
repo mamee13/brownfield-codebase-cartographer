@@ -220,7 +220,7 @@ def estimate_tokens(text: str, model: str = "") -> int:
     is_openai = any(prefix in model for prefix in ("gpt-", "cl100k", "text-embedding"))
     if is_openai:
         try:
-            import tiktoken  # type: ignore[import-not-found]
+            import tiktoken
 
             enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
             return len(enc.encode(text))
@@ -630,6 +630,10 @@ class Semanticist:
         )
         try:
             embeddings = self._client.embed(texts, model=EMBED_MODEL)
+            # Store embeddings on nodes for search
+            for mod, emb in zip(eligible, embeddings):
+                if mod.id in tracer._kg.graph.nodes:
+                    tracer._kg.graph.nodes[mod.id]["embedding"] = emb
         except Exception as exc:
             tracer._kg.add_warning(
                 WarningRecord(
@@ -719,6 +723,24 @@ class Semanticist:
             if data.get("domain_cluster"):
                 domain_lines.append(f"  {data['path']} → {data['domain_cluster']}")
 
+        # High-velocity files context for Q5
+        velocity_lines: List[str] = []
+        for _, data in kg.graph.nodes(data=True):
+            vel = data.get("change_velocity_30d", 0)
+            if data.get("type") == "module" and vel and vel > 0:
+                velocity_lines.append(f"  {data['path']} → {vel} changes/30d")
+
+        # Sort descending, take top 10
+        def _get_vel(x: str) -> int:
+            m = re.search(r"(\d+)", x)
+            return int(m.group(1)) if m else 0
+
+        velocity_lines = sorted(
+            velocity_lines,
+            key=_get_vel,
+            reverse=True,
+        )[:10]
+
         context = "\n".join(
             [
                 "=== TOP 5 MODULES BY PAGERANK (Surveyor static analysis) ===",
@@ -733,6 +755,9 @@ class Semanticist:
                 "=== MODULE PURPOSE STATEMENTS ===",
                 "\n".join(purpose_lines) or "(none generated yet)",
                 "",
+                "=== HIGH VELOCITY FILES (git log, last 30d) ===",
+                "\n".join(velocity_lines) or "(none)",
+                "",
                 "=== DOMAIN CLUSTERS ===",
                 "\n".join(domain_lines) or "(none)",
             ]
@@ -746,9 +771,10 @@ class Semanticist:
             "You are an expert data engineer performing a codebase onboarding analysis.\n"
             "Using ONLY the static evidence below, answer all five Day-One FDE questions.\n"
             "For each answer:\n"
-            "  - Write 2-4 sentences.\n"
-            "  - Cite at least one specific file from the evidence (format: file:path/to/file.py:L1-1).\n"
-            "  - Label each citation as method:static_analysis or method:llm_inference.\n"
+            "  - Output must follow the AnswerWithCitation schema exactly.\n"
+            "  - Cite a DIFFERENT specific file for each answer if possible (format: file:path/to/file.py:L1-1).\n"
+            "  - Do not reuse the same file citation across multiple answers if alternatives exist.\n"
+            "  - Method must be 'static_analysis' or 'llm_inference'.\n"
             "  - Do NOT repeat the question in your answer text.\n"
             "Format: number each answer exactly as Q1: ... Q2: ... Q3: ... Q4: ... Q5: ...\n\n"
             f"=== STATIC EVIDENCE ===\n{context}\n\n"

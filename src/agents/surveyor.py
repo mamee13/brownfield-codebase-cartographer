@@ -42,8 +42,10 @@ class Surveyor:
                 velocity[line] = velocity.get(line, 0) + 1
         return velocity
 
-    def run(self) -> KnowledgeGraph:
-        """Scan the repo, build module nodes, and establish import edges."""
+    def run(self, files_to_process: set[Path] | None = None) -> KnowledgeGraph:
+        """Scan the repo, build module nodes, and establish import edges.
+        If files_to_process is given, only generate nodes/edges for those files.
+        """
         velocity = self.extract_git_velocity()
         high_velocity_files = self._identify_high_velocity_files(velocity)
 
@@ -54,12 +56,16 @@ class Surveyor:
             if ".venv" in root or ".git" in root or "tests" in root:
                 continue
             for file in files:
+                full_path = Path(root) / file
+                if files_to_process is not None and full_path not in files_to_process:
+                    continue
+
                 if file.endswith(".py"):
-                    py_files.append(Path(root) / file)
+                    py_files.append(full_path)
                 elif file.endswith(".sql"):
-                    sql_files.append(Path(root) / file)
+                    sql_files.append(full_path)
                 elif file.endswith(".yml") or file.endswith(".yaml"):
-                    yaml_files.append(Path(root) / file)
+                    yaml_files.append(full_path)
 
         module_index = self._build_module_index(py_files)
         imports_by_module: Dict[str, List[str]] = {}
@@ -102,27 +108,48 @@ class Surveyor:
                 f.name for f in analysis.functions if not f.name.startswith("_")
             ] + [c.name for c in analysis.classes if not c.name.startswith("_")]
             imports_by_module[rel_path] = resolved_imports
-            public_symbol_counts[rel_path] = len(public_symbols)
+            public_symbol_counts[f"module:{rel_path}"] = len(public_symbols)
+
+            from src.models.schema import FunctionNode
+
+            for func in analysis.functions:
+                fn_node = FunctionNode(
+                    id=f"function:{rel_path}::{func.name}",
+                    qualified_name=f"{rel_path}::{func.name}",
+                    parent_module=f"module:{rel_path}",
+                    signature=func.signature,
+                    is_public_api=not func.name.startswith("_"),
+                )
+                self.kg.add_node(fn_node)
+                self.kg.add_edge(
+                    Edge(
+                        source=f"module:{rel_path}",
+                        target=fn_node.id,
+                        type=EdgeType.CALLS,
+                        weight=1,
+                    )
+                )
 
             node = ModuleNode(
-                id=rel_path,
+                id=f"module:{rel_path}",
                 path=rel_path,
                 language="python",
                 change_velocity_30d=velocity.get(rel_path, 0),
-                complexity_score=len(public_symbols),  # basic heuristic for now
+                complexity_score=self._compute_cyclomatic_complexity(content),
                 is_dead_code_candidate=False,
                 line_range=line_range,
             )
             self.kg.add_node(node)
-            if rel_path in high_velocity_files:
-                self.kg.graph.nodes[rel_path]["high_velocity"] = True
+            if node.id in self.kg.graph.nodes:
+                if rel_path in high_velocity_files:
+                    self.kg.graph.nodes[node.id]["high_velocity"] = True
 
         # Add SQL and YAML files as lightweight module nodes
         for filepath in sql_files:
             rel_path = str(filepath.relative_to(self.repo_path))
             line_range = _line_range_from_text_file(filepath)
             node = ModuleNode(
-                id=rel_path,
+                id=f"module:{rel_path}",
                 path=rel_path,
                 language="sql",
                 change_velocity_30d=velocity.get(rel_path, 0),
@@ -131,14 +158,15 @@ class Surveyor:
                 line_range=line_range,
             )
             self.kg.add_node(node)
-            if rel_path in high_velocity_files:
-                self.kg.graph.nodes[rel_path]["high_velocity"] = True
+            if node.id in self.kg.graph.nodes:
+                if rel_path in high_velocity_files:
+                    self.kg.graph.nodes[node.id]["high_velocity"] = True
 
         for filepath in yaml_files:
             rel_path = str(filepath.relative_to(self.repo_path))
             line_range = _line_range_from_text_file(filepath)
             node = ModuleNode(
-                id=rel_path,
+                id=f"module:{rel_path}",
                 path=rel_path,
                 language="yaml",
                 change_velocity_30d=velocity.get(rel_path, 0),
@@ -147,8 +175,9 @@ class Surveyor:
                 line_range=line_range,
             )
             self.kg.add_node(node)
-            if rel_path in high_velocity_files:
-                self.kg.graph.nodes[rel_path]["high_velocity"] = True
+            if node.id in self.kg.graph.nodes:
+                if rel_path in high_velocity_files:
+                    self.kg.graph.nodes[node.id]["high_velocity"] = True
 
         edge_counts: Counter[tuple[str, str]] = Counter()
         for source_path, targets in imports_by_module.items():
@@ -160,8 +189,8 @@ class Surveyor:
         for (source_path, target_path), count in edge_counts.items():
             self.kg.add_edge(
                 Edge(
-                    source=source_path,
-                    target=target_path,
+                    source=f"module:{source_path}",
+                    target=f"module:{target_path}",
                     type=EdgeType.IMPORTS,
                     weight=count,
                 )
@@ -254,6 +283,34 @@ class Surveyor:
                 break
 
         return ranks
+
+    @staticmethod
+    def _compute_cyclomatic_complexity(content: bytes) -> int:
+        """McCabe complexity: 1 + number of branch points."""
+        import ast
+
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return 1
+        count = 1
+        for node in ast.walk(tree):
+            if isinstance(
+                node,
+                (
+                    ast.If,
+                    ast.While,
+                    ast.For,
+                    ast.ExceptHandler,
+                    ast.With,
+                    ast.Assert,
+                    ast.comprehension,
+                ),
+            ):
+                count += 1
+            elif isinstance(node, ast.BoolOp):
+                count += len(node.values) - 1
+        return count
 
     @staticmethod
     def _identify_high_velocity_files(velocity: Dict[str, int]) -> set[str]:
