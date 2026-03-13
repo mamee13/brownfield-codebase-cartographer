@@ -192,6 +192,24 @@ class Archivist:
             + ("\n".join(vel_lines) or "_No git velocity data available._")
         )
 
+        # 7. Module Purpose Index
+        mpi_lines: List[str] = []
+        for path, data in sorted(
+            [
+                (data.get("path", nid), data)
+                for nid, data in kg.graph.nodes(data=True)
+                if data.get("type") == "module"
+            ],
+            key=lambda x: x[0],
+        ):
+            purpose = data.get("purpose_statement", "No purpose statement generated.")
+            mpi_lines.append(f"- **`{path}`**: {purpose} (source: llm_inference)")
+
+        sections.append(
+            "## Module Purpose Index\n\n"
+            + ("\n".join(mpi_lines) or "_No modules found._")
+        )
+
         content = (
             f"# CODEBASE.md\n\n"
             f"_Generated: {datetime.now(tz=timezone.utc).isoformat()}_\n\n"

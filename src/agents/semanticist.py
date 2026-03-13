@@ -26,6 +26,7 @@ import httpx
 from dotenv import load_dotenv
 
 from src.graph.knowledge_graph import KnowledgeGraph
+from src.utils.cost import calculate_cost
 from src.models.schema import (
     AnswerWithCitation,
     Citation,
@@ -242,6 +243,8 @@ class ContextWindowBudget:
 
     def charge(self, resp: LLMResponse) -> None:
         self.used += resp.tokens_in + resp.tokens_out
+        cost = calculate_cost(resp.model, resp.tokens_in, resp.tokens_out)
+        self.used_usd = getattr(self, "used_usd", 0.0) + cost
         if self.used >= self.max_tokens:
             self.exhausted = True
 
@@ -432,13 +435,14 @@ class Semanticist:
             )
             return None
         self._budget.charge(resp)
+        cost = calculate_cost(resp.model, resp.tokens_in, resp.tokens_out)
         tracer.log(
             agent="Semanticist",
             action=f"llm_{task_type}",
             evidence_source="llm_inference",
             confidence="inferred",
             file=filepath,
-            detail=f"model={resp.model} in={resp.tokens_in} out={resp.tokens_out}",
+            detail=f"model={resp.model} in={resp.tokens_in} out={resp.tokens_out} cost=${cost:.6f}",
         )
         return resp
 
