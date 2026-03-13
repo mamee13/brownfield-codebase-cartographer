@@ -110,12 +110,32 @@ class Surveyor:
             imports_by_module[rel_path] = resolved_imports
             public_symbol_counts[f"module:{rel_path}"] = len(public_symbols)
 
+            from src.models.schema import FunctionNode
+
+            for func in analysis.functions:
+                fn_node = FunctionNode(
+                    id=f"function:{rel_path}::{func.name}",
+                    qualified_name=f"{rel_path}::{func.name}",
+                    parent_module=f"module:{rel_path}",
+                    signature=func.signature,
+                    is_public_api=not func.name.startswith("_"),
+                )
+                self.kg.add_node(fn_node)
+                self.kg.add_edge(
+                    Edge(
+                        source=f"module:{rel_path}",
+                        target=fn_node.id,
+                        type=EdgeType.CALLS,
+                        weight=1,
+                    )
+                )
+
             node = ModuleNode(
                 id=f"module:{rel_path}",
                 path=rel_path,
                 language="python",
                 change_velocity_30d=velocity.get(rel_path, 0),
-                complexity_score=len(public_symbols),  # basic heuristic for now
+                complexity_score=self._compute_cyclomatic_complexity(content),
                 is_dead_code_candidate=False,
                 line_range=line_range,
             )
@@ -263,6 +283,34 @@ class Surveyor:
                 break
 
         return ranks
+
+    @staticmethod
+    def _compute_cyclomatic_complexity(content: bytes) -> int:
+        """McCabe complexity: 1 + number of branch points."""
+        import ast
+
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return 1
+        count = 1
+        for node in ast.walk(tree):
+            if isinstance(
+                node,
+                (
+                    ast.If,
+                    ast.While,
+                    ast.For,
+                    ast.ExceptHandler,
+                    ast.With,
+                    ast.Assert,
+                    ast.comprehension,
+                ),
+            ):
+                count += 1
+            elif isinstance(node, ast.BoolOp):
+                count += len(node.values) - 1
+        return count
 
     @staticmethod
     def _identify_high_velocity_files(velocity: Dict[str, int]) -> set[str]:

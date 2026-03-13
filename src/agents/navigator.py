@@ -12,6 +12,7 @@ Armed with 4 tools:
 from __future__ import annotations
 
 import os
+import operator
 from pathlib import Path
 from typing import Annotated, Any, Dict, List, Literal, TypedDict
 from pydantic import SecretStr
@@ -33,9 +34,10 @@ from src.models.schema import (
 
 
 class AgentState(TypedDict):
-    messages: Annotated[List[BaseMessage], "The messages in the conversation"]
+    messages: Annotated[List[BaseMessage], operator.add]
     kg: KnowledgeGraph
     repo_path: Path
+    navigator_response: str
 
 
 # ── Tool Logic (State-Independent or State-Passing) ──────────────────────────
@@ -255,7 +257,7 @@ class Navigator:
 
     def _chatbot(self, state: AgentState) -> Dict[str, Any]:
         # Redundantly enforce max_tokens on invoke
-        resp = self.llm.invoke(state["messages"], max_tokens=512)
+        resp = self.llm.invoke(state["messages"], max_tokens=256)
         return {"messages": [resp]}
 
     def _should_continue(self, state: AgentState) -> Literal["tools", "synthesis"]:
@@ -327,7 +329,7 @@ class Navigator:
 
         # Redundantly enforce max_tokens on invoke using with_structured_output's model
         # which supports .invoke(max_tokens=...)
-        structured_resp = synthesis_model.invoke(prompt, max_tokens=512)
+        structured_resp = synthesis_model.invoke(prompt, max_tokens=256)
 
         from typing import cast
 
@@ -340,9 +342,10 @@ class Navigator:
             "messages": [HumanMessage(content=query)],
             "kg": self.kg,
             "repo_path": self.repo_path,
+            "navigator_response": "",
         }
 
         from typing import Any, cast
 
         final_state = cast(Dict[str, Any], self.app.invoke(cast(Any, initial_state)))
-        return str(final_state["messages"][-1].content)
+        return str(final_state.get("navigator_response", "{}"))

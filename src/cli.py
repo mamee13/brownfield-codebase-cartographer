@@ -58,8 +58,6 @@ def query(
     typer.echo(f"Starting Navigator for {target_path}...")
     typer.echo("Type your question below, or 'exit'/'quit' to stop.")
 
-    # We will hook this up to the actual Navigator class soon.
-    # For now, just a dummy loop.
     from src.agents.navigator import Navigator
 
     navigator = Navigator(str(target_path))

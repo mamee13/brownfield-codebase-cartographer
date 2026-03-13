@@ -50,9 +50,31 @@ class Archivist:
         q1_answer = ""
         if kg.day_one_answers.get("Q1"):
             q1_answer = kg.day_one_answers["Q1"].answer
+
+        if not q1_answer:
+            module_count = sum(
+                1
+                for _, data in kg.graph.nodes(data=True)
+                if data.get("type") == "module"
+            )
+            top_modules = sorted(
+                [
+                    (data.get("path", "?"), data.get("change_velocity_30d", 0))
+                    for _, data in kg.graph.nodes(data=True)
+                    if data.get("type") == "module"
+                ],
+                key=lambda x: x[1],
+                reverse=True,
+            )[:3]
+            q1_answer = (
+                f"Static analysis identified {module_count} modules. "
+                "The core architecture spans these high-velocity files: "
+                f"{', '.join(p for p, _ in top_modules)}. "
+                "Run with LLM enabled for a synthesized structural overview."
+            )
         sections.append(
             "## Architecture Overview\n\n"
-            + (q1_answer or "_Not yet generated._")
+            + (q1_answer)
             + "\n\n"
             + "(source: llm_inference)"
         )

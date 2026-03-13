@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from src.agents.hydrologist import Hydrologist
 from src.agents.surveyor import Surveyor
@@ -11,7 +12,12 @@ class Orchestrator:
         self.cartography_dir = self.repo_path / ".cartography"
         self.cartography_dir.mkdir(parents=True, exist_ok=True)
 
-    def analyze(self, incremental: bool = False) -> None:
+    def analyze(self, incremental: bool = False, on_progress: Any = None) -> None:
+        def log(msg: str) -> None:
+            print(msg)
+            if on_progress:
+                on_progress(msg)
+
         from src.state_tracker import FileStateTracker
 
         tracker = FileStateTracker(self.cartography_dir)
@@ -19,13 +25,13 @@ class Orchestrator:
         files_to_process = None
         if incremental:
             files_to_process = tracker.get_changed_files(self.repo_path)
-            print(f"Incremental mode: {len(files_to_process)} files changed.")
+            log(f"Incremental mode: {len(files_to_process)} files changed.")
             if not files_to_process:
-                print("No changes detected. Analysis skipped.")
+                log("No changes detected. Analysis skipped.")
                 return
 
         # Run Surveyor → module graph
-        print("Running Surveyor (module graph)...")
+        log("Running Surveyor (module graph)...")
         surveyor = Surveyor(str(self.repo_path))
         module_kg = surveyor.run(files_to_process=files_to_process)
 
@@ -38,7 +44,7 @@ class Orchestrator:
         module_kg.save(self.cartography_dir / "module_graph.json")
 
         # Run Hydrologist → lineage graph
-        print("Running Hydrologist (lineage graph)...")
+        log("Running Hydrologist (lineage graph)...")
         hydrologist = Hydrologist(str(self.repo_path))
         lineage_kg = hydrologist.run(files_to_process=files_to_process)
 
@@ -98,6 +104,7 @@ class Orchestrator:
         except Exception:
             top5 = []
 
+        log("Running Semanticist (enrichment)...")
         semanticist.run(
             merged_kg,
             source_map=source_map,
@@ -107,12 +114,12 @@ class Orchestrator:
         )
 
         # Run Archivist to generate artifacts from enriched KG
+        log("Running Archivist (artifact generation)...")
         archivist = Archivist(output_dir=self.cartography_dir)
         archivist.run(merged_kg)
 
-        # Save the ENRICHED graphs back to disk
-        merged_kg.save(self.cartography_dir / "module_graph.json")
-        merged_kg.save(self.cartography_dir / "lineage_graph.json")
+        # Save the ENRICHED unified graph as a separate artifact
+        merged_kg.save(self.cartography_dir / "cartography_graph.json")
 
         # Save the new file state tracker so the next run knows what we processed
         if incremental or (files_to_process is None):
@@ -121,7 +128,7 @@ class Orchestrator:
                 tracker.get_changed_files(self.repo_path)
             tracker.save_state()
 
-        print(f"Analysis complete. Artifacts written to {self.cartography_dir}")
+        log(f"Analysis complete. Artifacts written to {self.cartography_dir}")
 
     def _merge_knowledge_graphs(
         self, base: KnowledgeGraph, other: KnowledgeGraph
