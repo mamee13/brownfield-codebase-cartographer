@@ -106,6 +106,16 @@ def trace_lineage_logic(
 
 
 def blast_radius_logic(module_path: str, kg: KnowledgeGraph) -> str:
+    """
+    Calculate the blast radius of a module.
+
+    Handles two graph typologies:
+      1. Python IMPORTS graph:   A -> B (A imports B)
+         - B's blast radius = all ancestors of B (modules that import B directly or transitively)
+      2. Data-flow graph:  dataset -> transformation -> dataset
+         - A SQL/dbt file's blast radius = all downstream datasets and transformations
+           reachable from the transformation nodes that cite this source file.
+    """
     module_node = f"module:{module_path}"
 
     if module_node not in kg.graph:
@@ -113,28 +123,53 @@ def blast_radius_logic(module_path: str, kg: KnowledgeGraph) -> str:
 
     import networkx as nx
 
-    # Use transitive closure to find all dependents
-    # In our graph, if A imports B, there is an edge A -> B.
-    # To find all modules that depend on B (blast radius), we need all nodes that can reach B.
-    # In networkx, these are called ancestors.
+    affected: set[str] = set()
+
+    # ── Typology 1: Python IMPORTS edges ────────────────────────────────────────
+    # If A imports B, edge is A -> B. B's blast radius = all ancestors of B.
     try:
-        all_dependents = nx.ancestors(kg.graph, module_node)
+        ancestors = nx.ancestors(kg.graph, module_node)
+        for node in ancestors:
+            if kg.graph.nodes[node].get("type") == NodeType.MODULE:
+                affected.add(node)
     except Exception:
-        all_dependents = set()
+        pass
 
-    importing_modules = [
-        m for m in all_dependents if kg.graph.nodes[m].get("type") == NodeType.MODULE
-    ]
+    # ── Typology 2: Data-flow edges (SQL / dbt) ──────────────────────────────────
+    # Find all transformation nodes whose source_file matches this module path.
+    # Then collect all downstream datasets and transformations reachable from them.
+    for node_id, data in kg.graph.nodes(data=True):
+        if data.get("type") != "transformation":
+            continue
+        if data.get("source_file") != module_path:
+            continue
+        # BFS/DFS downstream from this transformation node
+        try:
+            downstream = nx.descendants(kg.graph, node_id)
+            for d in downstream:
+                d_type = kg.graph.nodes[d].get("type")
+                if d_type in ("dataset", "transformation", "module"):
+                    affected.add(d)
+        except Exception:
+            pass
 
-    if not importing_modules:
-        return f"No transitive dependents found for '{module_path}'.\n\nEVIDENCE: [file: module_graph.json, line_range: N/A, method: static_analysis, confidence: 1.0]"
+    # Remove the module itself from results
+    affected.discard(module_node)
+
+    if not affected:
+        return (
+            f"No transitive dependents found for '{module_path}'.\n\n"
+            "EVIDENCE: [file: lineage_graph.json, line_range: N/A, method: static_analysis, confidence: 1.0]"
+        )
 
     output = f"Transitive dependents (blast radius) for '{module_path}':\n"
-    for m in importing_modules:
-        path = kg.graph.nodes[m].get("path", m)
-        output += f"- {path}\n"
+    for node_id in sorted(affected):
+        data = kg.graph.nodes[node_id]
+        node_type = data.get("type", "unknown")
+        label = data.get("path") or data.get("name") or node_id
+        output += f"- [{node_type}] {label}\n"
 
-    output += "\nEVIDENCE: [file: module_graph.json, line_range: N/A, method: static_analysis, confidence: 1.0]"
+    output += "\nEVIDENCE: [file: lineage_graph.json, line_range: N/A, method: static_analysis, confidence: 1.0]"
     return output
 
 

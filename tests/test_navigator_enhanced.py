@@ -78,4 +78,4 @@ def test_logic_functions_evidence_markers():
 
     # blast_radius
     output = blast_radius_logic("m1.py", kg)
-    assert "EVIDENCE: [file: module_graph.json" in output
+    assert "EVIDENCE: [file: lineage_graph.json" in output
