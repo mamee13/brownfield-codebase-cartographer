@@ -26,6 +26,7 @@ import httpx
 from dotenv import load_dotenv
 
 from src.graph.knowledge_graph import KnowledgeGraph
+from src.utils.cost import calculate_cost
 from src.models.schema import (
     AnswerWithCitation,
     Citation,
@@ -42,10 +43,10 @@ load_dotenv()
 EMBED_MODEL = os.getenv("CARTOGRAPHER_EMBED_MODEL", "openai/text-embedding-3-small")
 EMBED_DIM = 1536
 
-MAX_SOURCE_BYTES = 32_000  # truncate modules beyond this size
+MAX_SOURCE_BYTES = int(os.getenv("CARTOGRAPHER_MAX_SOURCE_BYTES", "32000"))
 KMEANS_SEED = 42  # fixed seed for deterministic clustering
-KMEANS_K_MIN = 5
-KMEANS_K_MAX = 8
+KMEANS_K_MIN = int(os.getenv("CARTOGRAPHER_KMEANS_K_MIN", "5"))
+KMEANS_K_MAX = int(os.getenv("CARTOGRAPHER_KMEANS_K_MAX", "8"))
 
 MODEL_BULK = os.getenv("CARTOGRAPHER_MODEL_BULK", "qwen/qwen-2.5-7b-instruct:free")
 MODEL_SYNTHESIS = os.getenv(
@@ -242,6 +243,8 @@ class ContextWindowBudget:
 
     def charge(self, resp: LLMResponse) -> None:
         self.used += resp.tokens_in + resp.tokens_out
+        cost = calculate_cost(resp.model, resp.tokens_in, resp.tokens_out)
+        self.used_usd = getattr(self, "used_usd", 0.0) + cost
         if self.used >= self.max_tokens:
             self.exhausted = True
 
@@ -432,13 +435,14 @@ class Semanticist:
             )
             return None
         self._budget.charge(resp)
+        cost = calculate_cost(resp.model, resp.tokens_in, resp.tokens_out)
         tracer.log(
             agent="Semanticist",
             action=f"llm_{task_type}",
             evidence_source="llm_inference",
             confidence="inferred",
             file=filepath,
-            detail=f"model={resp.model} in={resp.tokens_in} out={resp.tokens_out}",
+            detail=f"model={resp.model} in={resp.tokens_in} out={resp.tokens_out} cost=${cost:.6f}",
         )
         return resp
 
@@ -714,6 +718,7 @@ class Semanticist:
         # Collect purpose statements + domain clusters from graph nodes
         purpose_lines: List[str] = []
         domain_lines: List[str] = []
+        symbol_lines: List[str] = []
         for _, data in kg.graph.nodes(data=True):
             if data.get("type") == "module" and data.get("purpose_statement"):
                 vel = data.get("change_velocity_30d", "?")
@@ -721,7 +726,13 @@ class Semanticist:
                     f"- {data['path']} (velocity={vel}): {data['purpose_statement']}"
                 )
             if data.get("domain_cluster"):
-                domain_lines.append(f"  {data['path']} → {data['domain_cluster']}")
+                domain_lines.append(f"  {data['path']} \u2192 {data['domain_cluster']}")
+            # Collect symbol → line number map so the LLM can cite specific lines
+            slm = data.get("symbol_line_map")
+            if slm and data.get("path"):
+                file_path = data["path"]
+                for sym, lineno in list(slm.items())[:10]:  # cap per file
+                    symbol_lines.append(f"  {file_path}::{sym} \u2192 L{lineno}")
 
         # High-velocity files context for Q5
         velocity_lines: List[str] = []
@@ -760,6 +771,9 @@ class Semanticist:
                 "",
                 "=== DOMAIN CLUSTERS ===",
                 "\n".join(domain_lines) or "(none)",
+                "",
+                "=== SYMBOL LINE MAP (file::symbol \u2192 line, use for precise citations) ===",
+                "\n".join(symbol_lines) or "(none)",
             ]
         )
 
@@ -772,14 +786,17 @@ class Semanticist:
             "Using ONLY the static evidence below, answer all five Day-One FDE questions.\n"
             "For each answer:\n"
             "  - Output must follow the AnswerWithCitation schema exactly.\n"
-            "  - Cite a DIFFERENT specific file for each answer if possible (format: file:path/to/file.py:L1-1).\n"
+            "  - Cite a DIFFERENT specific file for each answer if possible.\n"
+            "  - Use the SYMBOL LINE MAP to find the exact line numbers for each citation.\n"
+            "    Citation format: file:path/to/file.py:LN-M  (e.g. file:src/pipeline.py:L42-L67)\n"
+            "  - Do NOT use L1-1 as the line range; always cite the specific symbol's lines.\n"
             "  - Do not reuse the same file citation across multiple answers if alternatives exist.\n"
             "  - Method must be 'static_analysis' or 'llm_inference'.\n"
             "  - Do NOT repeat the question in your answer text.\n"
             "Format: number each answer exactly as Q1: ... Q2: ... Q3: ... Q4: ... Q5: ...\n\n"
             f"=== STATIC EVIDENCE ===\n{context}\n\n"
             f"=== QUESTIONS ===\n{questions_block}\n\n"
-            "Answers (cite file:path:LN-M for each fact):"
+            "Answers (cite file:path:LN-M using specific symbol lines from the SYMBOL LINE MAP):"
         )
 
         use_bulk = os.getenv("CARTOGRAPHER_USE_BULK_FOR_DAY_ONE", "").lower() in {

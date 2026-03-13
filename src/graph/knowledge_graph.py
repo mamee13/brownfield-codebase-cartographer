@@ -28,6 +28,15 @@ class KnowledgeGraph:
     # ── Warnings ──────────────────────────────────────────────────────────────
 
     def add_warning(self, warning: WarningRecord) -> None:
+        """Add a warning, avoiding duplicates based on (code, file, line)."""
+        # Simple deduplication
+        for existing in self.warnings:
+            if (
+                existing.code == warning.code
+                and existing.file == warning.file
+                and existing.line == warning.line
+            ):
+                return
         self.warnings.append(warning)
 
     # ── Nodes / Edges ─────────────────────────────────────────────────────────
