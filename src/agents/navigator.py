@@ -18,7 +18,7 @@ from typing import Annotated, Any, Dict, List, Literal, TypedDict
 from pydantic import SecretStr
 
 import numpy as np
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
@@ -29,6 +29,9 @@ from src.models.schema import (
     Citation,
     NodeType,
 )
+
+# Technical Configuration
+CARTOGRAPHY_DIR = os.getenv("CARTOGRAPHER_DIR", ".cartography")
 
 
 # ── State Definition ─────────────────────────────────────────────────────────
@@ -70,8 +73,11 @@ def find_implementation_logic(query: str, kg: KnowledgeGraph) -> str:
 
     output = "Top matching implementations:\n"
     for score, data in top:
-        output += f"- {data['path']} (Similarity: {score:.2f}): {data.get('purpose_statement', 'No purpose statement available')}\n"
-        output += f"  EVIDENCE: [file: {data['path']}, line_range: L1-1, method: llm_inference, confidence: {score:.2f}]\n"
+        path = data.get("path", "unknown")
+        lines = data.get("line_range", "[source_full_file]")
+        purpose = data.get("purpose_statement", "No purpose statement available")
+        output += f"- {path} (Similarity: {score:.2f}): {purpose}\n"
+        output += f"  EVIDENCE: [file: {path}, line_range: {lines}, method: llm_inference, confidence: {score:.2f}]\n"
 
     return output
 
@@ -86,22 +92,35 @@ def trace_lineage_logic(
 
     output = f"Lineage for '{dataset_name}' ({direction}):\n"
 
+    def _format_node(nid: str) -> str:
+        d = kg.graph.nodes[nid]
+        ntype = d.get("type", "unknown")
+        # Extract location if available
+        base = f"- {nid} (Type: {ntype})"
+        source = d.get("source_file") or d.get("path")
+        lines = d.get("line_range")
+        if source:
+            loc = f" (source: {source}"
+            if lines:
+                loc += f":L{lines}"
+            loc += ")"
+            return base + loc
+        return base
+
     if direction == "upstream":
         predecessors = list(kg.graph.predecessors(dataset_node))
         if not predecessors:
-            return f"No upstream sources found for '{dataset_name}'.\n\nEVIDENCE: [file: lineage_graph.json, line_range: N/A, method: static_analysis, confidence: 1.0]"
+            return f"No upstream sources found for '{dataset_name}'.\n\nEVIDENCE: [artifact: lineage_discovery, component: graph_engine, based_on: source_sink_analysis, confidence: 1.0]"
         for p in predecessors:
-            data = kg.graph.nodes[p]
-            output += f"- {p} (Type: {data.get('type')})\n"
+            output += _format_node(p) + "\n"
     else:
         successors = list(kg.graph.successors(dataset_node))
         if not successors:
-            return f"No downstream dependents found for '{dataset_name}'.\n\nEVIDENCE: [file: lineage_graph.json, line_range: N/A, method: static_analysis, confidence: 1.0]"
+            return f"No downstream dependents found for '{dataset_name}'.\n\nEVIDENCE: [artifact: lineage_discovery, component: graph_engine, based_on: dependency_analysis, confidence: 1.0]"
         for s in successors:
-            data = kg.graph.nodes[s]
-            output += f"- {s} (Type: {data.get('type')})\n"
+            output += _format_node(s) + "\n"
 
-    output += "\nEVIDENCE: [file: lineage_graph.json, line_range: N/A, method: static_analysis, confidence: 1.0]"
+    output += "\nEVIDENCE: [artifact: lineage_discovery, component: graph_engine, based_on: multi_hop_traversal, confidence: 1.0]"
     return output
 
 
@@ -159,17 +178,30 @@ def blast_radius_logic(module_path: str, kg: KnowledgeGraph) -> str:
     if not affected:
         return (
             f"No transitive dependents found for '{module_path}'.\n\n"
-            "EVIDENCE: [file: lineage_graph.json, line_range: N/A, method: static_analysis, confidence: 1.0]"
+            f"EVIDENCE: [artifact: blast_radius_analysis, seed_module: {module_path}, traversal: transitive_closure, confidence: 1.0]"
         )
 
     output = f"Transitive dependents (blast radius) for '{module_path}':\n"
-    for node_id in sorted(affected):
-        data = kg.graph.nodes[node_id]
-        node_type = data.get("type", "unknown")
-        label = data.get("path") or data.get("name") or node_id
-        output += f"- [{node_type}] {label}\n"
 
-    output += "\nEVIDENCE: [file: lineage_graph.json, line_range: N/A, method: static_analysis, confidence: 1.0]"
+    def _format_node(nid: str) -> str:
+        d = kg.graph.nodes[nid]
+        ntype = d.get("type", "unknown")
+        label = d.get("path") or d.get("name") or nid
+        base = f"- [{ntype}] {label}"
+        source = d.get("source_file") or d.get("path")
+        lines = d.get("line_range")
+        if source:
+            loc = f" (source: {source}"
+            if lines:
+                loc += f":L{lines}"
+            loc += ")"
+            return base + loc
+        return base
+
+    for node_id in sorted(affected):
+        output += _format_node(node_id) + "\n"
+
+    output += f"\nEVIDENCE: [artifact: blast_radius_analysis, seed_module: {module_path}, traversal: transitive_closure, confidence: 1.0]"
     return output
 
 
@@ -259,12 +291,11 @@ def explain_module(path: str) -> str:
 class Navigator:
     def __init__(self, repo_path: str) -> None:
         self.repo_path = Path(repo_path).resolve()
-        self.cartography_dir = self.repo_path / ".cartography"
+        self.cartography_dir = self.repo_path / CARTOGRAPHY_DIR
         self.kg = self._load_kg()
 
         # Tools
         self.tools = [find_implementation, trace_lineage, blast_radius, explain_module]
-        # self.tool_node = ToolNode(self.tools) # Removed
 
         # LLM setup (configured for OpenRouter)
         from src.agents.semanticist import MODEL_SYNTHESIS, OPENROUTER_BASE
@@ -274,10 +305,19 @@ class Navigator:
             api_key=SecretStr(os.environ.get("OPENROUTER_API_KEY") or ""),
             base_url=OPENROUTER_BASE,
             temperature=0,
-            # max_tokens can sometimes cause issues in constructor with mypy,
-            # so we use .bind() or model_kwargs if needed,
-            # but we already override it in .invoke()
         ).bind_tools(self.tools)
+
+        self.system_message = SystemMessage(
+            content=(
+                "You are an expert repository navigator. Your goal is to help the user understand the codebase.\n"
+                "You have access to tools that query a pre-computed knowledge graph.\n"
+                "Key instructions:\n"
+                "1. BE PROACTIVE: If a query requires multiple steps (e.g., 'find X and then explain it'), call the tools sequentially.\n"
+                "2. CHAIN REASONING: Use the output of one tool to inform the next tool call.\n"
+                "3. GROUNDING: Only answer based on tool outputs. Do not make up information.\n"
+                "4. PRECISION: When citing modules or datasets, include the file paths and line ranges provided in the tool output."
+            )
+        )
 
         # Build Graph
         workflow = StateGraph(AgentState)
@@ -315,8 +355,9 @@ class Navigator:
         return kg
 
     def _chatbot(self, state: AgentState) -> Dict[str, Any]:
-        # Redundantly enforce max_tokens on invoke
-        resp = self.llm.invoke(state["messages"], max_tokens=256)
+        """Assistant node that decides which tools to call."""
+        messages = [self.system_message] + state["messages"]
+        resp = self.llm.invoke(messages, max_tokens=256)
         return {"messages": [resp]}
 
     def _should_continue(self, state: AgentState) -> Literal["tools", "synthesis"]:

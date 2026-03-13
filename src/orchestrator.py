@@ -8,8 +8,11 @@ from src.graph.knowledge_graph import KnowledgeGraph
 
 class Orchestrator:
     def __init__(self, repo_path: str) -> None:
+        import os
+
         self.repo_path = Path(repo_path).resolve()
-        self.cartography_dir = self.repo_path / ".cartography"
+        cartography_dir_name = os.getenv("CARTOGRAPHER_DIR", ".cartography")
+        self.cartography_dir = self.repo_path / cartography_dir_name
         self.cartography_dir.mkdir(parents=True, exist_ok=True)
 
     def analyze(self, incremental: bool = False, on_progress: Any = None) -> None:

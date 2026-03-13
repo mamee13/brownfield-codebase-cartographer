@@ -1,5 +1,5 @@
 """
-Hydrologist Agent — Step 6 (Day 2)
+Hydrologist Agent — Step 6
 
 Orchestrates lineage extraction across:
   - SQL files   (SQLAnalyzer)
@@ -16,8 +16,7 @@ deterministic node IDs:
 Exposes blast_radius, find_sources, find_sinks for graph traversal.
 """
 
-from __future__ import annotations
-
+import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -36,6 +35,8 @@ from src.models.schema import (
     WarningRecord,
     WarningSeverity,
 )
+
+CARTOGRAPHY_DIR = os.getenv("CARTOGRAPHER_DIR", ".cartography")
 
 
 def _dataset_id(name: str) -> str:

@@ -74,8 +74,8 @@ def test_logic_functions_evidence_markers():
 
     # trace_lineage
     output = trace_lineage_logic("s2", "upstream", kg)
-    assert "EVIDENCE: [file: lineage_graph.json" in output
+    assert "EVIDENCE: [artifact: lineage_discovery" in output
 
     # blast_radius
     output = blast_radius_logic("m1.py", kg)
-    assert "EVIDENCE: [file: lineage_graph.json" in output
+    assert "EVIDENCE: [artifact: blast_radius_analysis" in output

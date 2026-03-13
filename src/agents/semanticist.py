@@ -43,10 +43,10 @@ load_dotenv()
 EMBED_MODEL = os.getenv("CARTOGRAPHER_EMBED_MODEL", "openai/text-embedding-3-small")
 EMBED_DIM = 1536
 
-MAX_SOURCE_BYTES = 32_000  # truncate modules beyond this size
+MAX_SOURCE_BYTES = int(os.getenv("CARTOGRAPHER_MAX_SOURCE_BYTES", "32000"))
 KMEANS_SEED = 42  # fixed seed for deterministic clustering
-KMEANS_K_MIN = 5
-KMEANS_K_MAX = 8
+KMEANS_K_MIN = int(os.getenv("CARTOGRAPHER_KMEANS_K_MIN", "5"))
+KMEANS_K_MAX = int(os.getenv("CARTOGRAPHER_KMEANS_K_MAX", "8"))
 
 MODEL_BULK = os.getenv("CARTOGRAPHER_MODEL_BULK", "qwen/qwen-2.5-7b-instruct:free")
 MODEL_SYNTHESIS = os.getenv(

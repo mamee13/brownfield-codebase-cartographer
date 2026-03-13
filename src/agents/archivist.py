@@ -7,8 +7,7 @@ Produces all living artifact outputs from the enriched KnowledgeGraph:
   - .cartography/cartography_trace.jsonl  (JSONL audit log)
 """
 
-from __future__ import annotations
-
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -16,7 +15,7 @@ from typing import Any, Dict, List, Optional
 from src.graph.knowledge_graph import KnowledgeGraph
 from src.models.schema import ModuleNode, TraceEntry
 
-_CARTOGRAPHY_DIR = ".cartography"
+_CARTOGRAPHY_DIR = os.getenv("CARTOGRAPHER_DIR", ".cartography")
 
 _FDE_QUESTIONS = [
     "What is the primary data ingestion path?",
@@ -94,7 +93,8 @@ class Archivist:
                 key=lambda x: x[1],
                 reverse=True,
             )[:5]
-        except Exception:
+        except (ImportError, RuntimeError, ValueError):
+            # Fallback for PageRank failures (e.g. no edges or missing module)
             top5 = [(m.id, 0.0) for m in module_nodes[:5]]
 
         cp_lines: List[str] = []
@@ -157,7 +157,8 @@ class Archivist:
                 debt_lines.append(
                     f"- **Circular dependency**: {', '.join(sorted(scc))} (source: static_analysis)"
                 )
-        except Exception:
+        except (ImportError, ValueError, RuntimeError):
+            # networkx optional or graph issues
             pass
         # Doc drift warnings
         for w in kg.warnings:
@@ -263,7 +264,7 @@ class Archivist:
             if answer_obj:
                 answer_text = answer_obj.answer
                 evidence_lines = "\n".join(
-                    f"- file:{c.file}:{c.line_range} (method: {c.method})"
+                    f"- file:{c.file}:{c.line_range} (source: {c.method})"
                     for c in answer_obj.citations
                 )
                 confidence = answer_obj.confidence
@@ -353,6 +354,7 @@ class Archivist:
             if data.get("type") == "module":
                 try:
                     nodes.append(ModuleNode.model_validate(data))
-                except Exception:
-                    pass
+                except (ValueError, TypeError):
+                    # Skip invalid module nodes that don't match the schema
+                    continue
         return nodes

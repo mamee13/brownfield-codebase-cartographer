@@ -100,7 +100,10 @@ def query(
 
 def _clone_repo(repo_url: str) -> str:
     """Clone a GitHub repo URL into a local cache dir and return the path."""
-    base_dir = Path(".cartography_repos")
+    import os
+
+    clone_root = os.getenv("CARTOGRAPHER_CLONE_ROOT", ".cartography_repos")
+    base_dir = Path(clone_root)
     base_dir.mkdir(parents=True, exist_ok=True)
 
     # Derive a folder name from the repo URL.
