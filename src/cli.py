@@ -121,5 +121,18 @@ def _clone_repo(repo_url: str) -> str:
     return str(dest)
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("0.0.0.0", help="Host to bind the server to."),
+    port: int = typer.Option(8000, help="Port to bind the server to."),
+) -> None:
+    """Start the Cartographer API server."""
+    import uvicorn
+    from src.server import app as fastapi_app
+
+    typer.echo(f"Starting Cartographer API server on {host}:{port}...")
+    uvicorn.run(fastapi_app, host=host, port=port)
+
+
 if __name__ == "__main__":
     app()
