@@ -357,7 +357,7 @@ class Navigator:
     def _chatbot(self, state: AgentState) -> Dict[str, Any]:
         """Assistant node that decides which tools to call."""
         messages = [self.system_message] + state["messages"]
-        resp = self.llm.invoke(messages, max_tokens=4096)
+        resp = self.llm.invoke(messages, max_tokens=256)
         return {"messages": [resp]}
 
     def _should_continue(self, state: AgentState) -> Literal["tools", "synthesis"]:
@@ -428,7 +428,7 @@ class Navigator:
         for msg in state["messages"]:
             prompt += f"{msg.type}: {msg.content}\n"
 
-        structured_resp = synthesis_model.invoke(prompt, max_tokens=4096)
+        structured_resp = synthesis_model.invoke(prompt, max_tokens=512)
 
         from typing import cast
 

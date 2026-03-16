@@ -820,8 +820,6 @@ class Semanticist:
             return self._fallback_day_one_answers(kg, top5, sources, sinks)
 
         raw = resp.text.strip()
-        with open("/tmp/raw_q_output.txt", "w") as f:
-            f.write(raw)
         answers = self._parse_day_one_answers(raw, kg, top5)
         if not answers or len(answers) < 5:
             kg.add_warning(
@@ -934,89 +932,21 @@ class Semanticist:
         Falls back to citing a top-5 module if no explicit citation found.
         """
         import re
-        import json
 
         answers: Dict[str, AnswerWithCitation] = {}
-
-        # 1) Try to parse as JSON first (LLM sometimes ignores string formatting)
-        raw_clean = raw.strip()
-        if raw_clean.startswith("```json"):
-            raw_clean = raw_clean.split("```json")[1].split("```")[0].strip()
-        elif raw_clean.startswith("```"):
-            raw_clean = raw_clean.split("```")[1].split("```")[0].strip()
-
-        try:
-            data = json.loads(raw_clean)
-            if "answers" in data and isinstance(data["answers"], list):
-                for item in data["answers"]:
-                    q_id = item.get("id", "")
-                    if not q_id.startswith("Q"):
-                        continue
-
-                    ans_text = item.get("answer", "")
-                    cite_str = item.get("citation", "")
-
-                    citations = []
-                    if cite_str:
-                        # citation can be "src/main.py::process:L17" or "file:src/file.py:L1-10"
-                        # Try to extract just the file and line range safely.
-                        match = re.search(
-                            r"([\w./\-_]+\.(?:py|sql|yaml|yml))(?:.*?(L\d+(?:-\d+)?))?",
-                            cite_str,
-                        )
-                        if match:
-                            citations.append(
-                                Citation(
-                                    file=match.group(1),
-                                    line_range=match.group(2) or "L1-1",
-                                    method="llm_inference",
-                                )
-                            )
-
-                    answers[q_id] = AnswerWithCitation(
-                        answer=_clean_answer_text(
-                            ans_text,
-                            question=None,  # Clean later
-                        ),
-                        citations=citations,
-                        confidence="inferred",
-                    )
-
-                # If we parsed 5 items successfully from JSON, format and return them.
-                if len(answers) >= 5:
-                    for i in range(1, 6):
-                        q_key = f"Q{i}"
-                        if q_key in answers:
-                            answers[q_key].answer = _clean_answer_text(
-                                answers[q_key].answer, question=_FDE_QUESTIONS[i - 1]
-                            )
-                    return answers
-        except json.JSONDecodeError:
-            pass
-
-        # 2) Fallback to Regex parsing handle Q1:, Q1., **Q1:**, ### Q1, _Q3_, etc.
-        # \bQ(\d)\b or similar, but let's split by Q(\d) with surrounding markers.
-        parts = re.split(r"(?im)^[\s#*_]*Q(\d)[*.:\s\-_]*", raw)
-
-        current_q = None
-        for part in parts:
-            if not part:
-                continue
-            if part.isdigit() and 1 <= int(part) <= 5:
-                current_q = int(part)
-                continue
-
-            if current_q is None:
-                continue
-
-            q_key = f"Q{current_q}"
-            answer_text = part.strip()
+        # Split on Q1:, Q2: ... Q5:
+        parts = re.split(r"Q(\d):", raw)
+        # parts = ['', '1', 'answer1', '2', 'answer2', ...]
+        for i in range(1, len(parts), 2):
+            q_num = int(parts[i])
+            answer_text = parts[i + 1].strip() if i + 1 < len(parts) else ""
+            q_key = f"Q{q_num}"
 
             # Extract file citations: file:path/to/file.py:L1-42
             cite_pattern = re.findall(
                 r"file:([\w./\-_]+\.(?:py|sql|yaml|yml)):L(\d+)-(\d+)", answer_text
             )
-            citations = [
+            citations: List[Citation] = [
                 Citation(
                     file=path,
                     line_range=f"L{start}-{end}",
@@ -1076,8 +1006,8 @@ class Semanticist:
             answers[q_key] = AnswerWithCitation(
                 answer=_clean_answer_text(
                     answer_text,
-                    question=_FDE_QUESTIONS[current_q - 1]
-                    if 0 < current_q <= len(_FDE_QUESTIONS)
+                    question=_FDE_QUESTIONS[q_num - 1]
+                    if 0 < q_num <= len(_FDE_QUESTIONS)
                     else None,
                 ),
                 citations=citations,
